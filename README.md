@@ -1,21 +1,39 @@
-# gecko-w10m
+# Strawfox Browser
 
-A **Gecko**-based browser for **Windows 10 Mobile**: the real Firefox engine, with **JIT
+A **Gecko**-based browser for Xbox: the real Firefox engine, with **JIT
 enabled**, inside a UWP app.
 
-The phone's stock browser (the EdgeHTML-based Edge) can no longer render the modern web.
-Gecko is kept current independently, so it brings those sites back.
+## Features
 
+- Native USB mouse support on Xbox.
+- Can use up to 5gb of RAM, not limited by Edge's memory limitations.
+- Multitab. Can run multiple tabs on background, unlike Edge.
+- Download support* (unlike Edge)
+- Upload support (unlike Edge)
+- Addon support (unlike)
+- Inspect/Dev Tools present.
+- And more.
+
+*In the first Download, it will open a picker asking to choose a Download folder. This is the only workaround for Xbox.
+
+## Limitations
+
+- WebAssembly currently unavailable.
+- Can often freeze. The issues are being investigated.
+- No sandbox, due to the nature of the UWP isolated environment.
+- It first downloads to the LocalStorage and then moves to the user Downloads folder. Due to this, the file will appear as "Deleted" in the Downloads popup. This will be fixed.
+
+ 
 ## How Gecko runs under UWP
 
-Windows 10 Mobile apps run in the UWP app container, which by default blocks the three
+Xbox apps run in the UWP app container, which by default blocks the three
 things a browser engine needs. Each is handled:
 
 | Need | Solution |
 |---|---|
 | **JIT / executable memory** | The `codeGeneration` restricted capability + `VirtualAllocFromApp` / `VirtualProtectFromApp`. A force-included compat header remaps the allocators tree-wide; ARM I-cache flushing is added by a small wrapper. |
 | **No child processes** | Gecko is built **single-process** (`MOZ_FORCE_DISABLE_E10S=1`). |
-| **Sandbox / filesystem** | On an **interop-unlocked** device the appx may declare `broadFileSystemAccess` / `unrestrictedFileSystemAccess`. Interop unlock is what makes restricted capabilities available to a sideloaded app. |
+| **Storage / filesystem** | Uses the app's LocalStorage for Downloads, profile, addons, etc. |
 
 Full detail: [`docs/PORTING-W10M.md`](docs/PORTING-W10M.md).
 
@@ -37,17 +55,17 @@ engine/firefox/       Gecko submodule: the port's branch w10m-port, on Firefox 1
 
 ## Build
 
-The build runs on x64 Windows and cross-compiles for 32-bit ARM. The tools below are the
+The build runs on x64 Windows. The tools below are the
 versions it is known to build with.
 
 ### Requirements
 
 | Tool | Version | Notes |
 |---|---|---|
-| Visual Studio 2022 | 17.14 (MSVC 14.44) | Workload "Desktop development with C++" plus the individual component **MSVC v143 ARM build tools**. 17.14 is the last release with ARM32 tools. |
-| Windows 10/11 SDK | 10.0.22621.0 | Headers, tools, cppwinrt. The newer 26100 dropped ARM32 libraries. |
-| Windows 10 SDK | 10.0.14393.0 | Optional: the shell links against it so the package starts on 1607 phones (`GECKO_W10M_SDK_LIB=10.0.14393.0`). |
-| VCLibs ARM | 14.00 | `Microsoft.VCLibs.arm.14.00.appx` under `C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0`, installed with the UWP workload of Visual Studio. The package carries its CRT from it. |
+| Visual Studio 2026 | 17.14 (MSVC 14.44) | Workload "Desktop development with C++" plus the individual component **MSVC v143 ARM build tools**. 17.14 is the last release with ARM32 tools. |
+| Windows 10/11 SDK | 10.0.26100.0 | Headers, tools, cppwinrt. The newer 26100 dropped ARM32 libraries. |
+| VCLibs x64 | 14.00 | `Microsoft.VCLibs.arm.14.00.appx` under `C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0`, installed with the UWP workload of Visual Studio. The package carries its CRT from it. |
+| VCLibs Desktop x64 | 14.00 | `Microsoft.VCLibs.Desktop.arm.14.00.appx` under `C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs.Desktop\14.0`, installed with the UWP workload of Visual Studio. |
 | LLVM | 22.1 | clang-cl and lld-link, installed in `C:\Program Files\LLVM`. |
 | MozillaBuild | 4.2 | In `C:\mozilla-build`. Run the scripts from its `start-shell.bat` or any bash that has it on PATH. |
 | Rust | nightly (built with 1.96.0-nightly 2026-03-11) | The default toolchain, with the `rust-src` component: `rustup default nightly-2026-03-11`, `rustup component add rust-src`. The std for the ARM32 UWP target is compiled from source by `tools/uwp-install-std.sh`. |
@@ -87,11 +105,8 @@ takes about half an hour on 16 cores; after that the steps can be run one by one
 
 ### Signing
 
-The package is signed with `app/GeckoW10m/Gecko.pfx` (not in the repository; password
-`gecko_w10m`, or `GECKO_W10M_PFX_PASSWORD`). When there is none, a self-signed certificate
-is made for the manifest's `Publisher`. The signer must match that Publisher exactly, so
-to publish your own build change `Publisher` in `app/GeckoW10m/Package.appxmanifest`
-(and `Name`, if it should not replace this app on a phone that has it).
+I suggest you to create your own certificate on Visual Studio. In order for native USB mouse to work on Xbox, you must use a certificate with Microsoft's CN and Microsoft Edge package identity name (Microsoft.MicrosoftEdge.Name for example).
+
 
 ### Changing the engine
 
@@ -107,6 +122,14 @@ bash tools/export-patches-w10m.sh
 `tools/build-gecko-uwp.ps1`, `uwp-configure.sh`, `uwp-build.sh`, `uwp-build-std.sh` and
 `mozconfig/mozconfig.arm-uwp` are the SpiderMonkey-only bring-up from before the whole
 browser built; they are kept for reference and are not part of the build above.
+
+## Credits
+
+Mozzila, for Firefox.
+
+Computershik45 for the ARM32 UWP port.
+
+Whoever found the mouse workaround on Xbox.
 
 ## License
 
