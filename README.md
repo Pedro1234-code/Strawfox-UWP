@@ -1,7 +1,13 @@
-# Strawfox Browser
+# <img width="38" height="38" alt="geckologo" src="https://github.com/user-attachments/assets/b8563757-0adb-45a0-b608-0d0bf2716e39" /> Strawfox Browser
 
 A **Gecko**-based browser for Xbox: the real Firefox engine, with **JIT
 enabled**, inside a UWP app.
+
+Join the XB Desktop Mode discord server: https://discord.gg/dEKYCqFXt
+
+## Screenshots
+<img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/c812ee9e-2af5-41e2-9aa4-4676a378dfcd" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/04b571b8-af8e-45f5-86f9-d58bd8de88f3" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/603c17ae-45e5-4196-ab34-aad2473b56f8" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/a9e62934-35a0-4db0-a12f-5cb636da29f1" />
+Taken on Xbox Series S
 
 ## Features
 
@@ -21,10 +27,10 @@ Comparison with the Xbox's built-in Edge browser:
 
 ## Limitations
 
-- WebAssembly currently unavailable.
 - Can often freeze. The issues are being investigated.
 - No sandbox, due to the nature of the UWP isolated environment.
 - It first downloads to the LocalStorage and then moves to the user Downloads folder. Due to this, the file will appear as "Deleted" in the Downloads popup. This will be fixed.
+- Gamepad navigation is still WIP. I strongly recommend to use a mouse and a keyboard.
 
  
 ## How Gecko runs under UWP
@@ -131,6 +137,8 @@ browser built; they are kept for reference and are not part of the build above.
 Mozzila, for Firefox.
 
 Computershik45 for the ARM32 UWP port.
+
+Codex.
 
 Whoever found the mouse workaround on Xbox.
 
