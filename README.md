@@ -136,6 +136,8 @@ Mozzila, for Firefox.
 
 Computershik45 for the ARM32 UWP port.
 
+Codex.
+
 Whoever found the mouse workaround on Xbox.
 
 ## License
