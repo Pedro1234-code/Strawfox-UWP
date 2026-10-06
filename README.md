@@ -3,6 +3,8 @@
 A **Gecko**-based browser for Xbox: the real Firefox engine, with **JIT
 enabled**, inside a UWP app.
 
+Join the XB Desktop Mode discord server: https://discord.gg/dEKYCqFXt
+
 ## Screenshots
 <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/c812ee9e-2af5-41e2-9aa4-4676a378dfcd" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/04b571b8-af8e-45f5-86f9-d58bd8de88f3" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/603c17ae-45e5-4196-ab34-aad2473b56f8" /> <img width="1280" height="720" alt="image" src="https://github.com/user-attachments/assets/a9e62934-35a0-4db0-a12f-5cb636da29f1" />
 Taken on Xbox Series S
