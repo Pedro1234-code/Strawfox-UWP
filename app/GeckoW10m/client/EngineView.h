@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -147,6 +148,10 @@ class EngineView {
   void OnMouseButton(winrt::Windows::Foundation::Point const& point,
                      int32_t button, bool pressed);
   void WireCoreMouse();
+  // UWP exposes Xbox controllers through Windows.Gaming.Input rather than the
+  // CoreWindow pointer stream. Polling here keeps the stick continuous and
+  // converts it to the same wheel input used by a desktop mouse.
+  void PollGamepadScroll();
   winrt::Windows::Foundation::Point CoreMousePoint(
       winrt::Windows::Foundation::Point const& point) const;
   bool ToFrame(winrt::Windows::Foundation::Point const& point, int32_t* x,
@@ -174,6 +179,11 @@ class EngineView {
   using OverlayFn = int32_t (*)();
   using TextFn = void (*)(const uint16_t* text, int32_t length);
   using KeyFn = void (*)(int32_t keyCode);
+  // Unlike the original entry point, this keeps physical keydown/keyup and
+  // modifiers separate.  That is required for browser shortcuts and for
+  // Escape to leave pointer lock.
+  using Key2Fn = void (*)(int32_t down, int32_t keyCode, uint32_t modifiers,
+                          int32_t repeat);
   using ResizeFn = void (*)(int32_t width, int32_t height);
   using TouchFn = void (*)(int32_t pointerId, int32_t state, int32_t x, int32_t y);
   using ScreenFn = void (*)(int32_t width, int32_t height);
@@ -215,6 +225,7 @@ class EngineView {
   OverlayFn overlay_ = nullptr;
   TextFn text_ = nullptr;
   KeyFn key_ = nullptr;
+  Key2Fn key2_ = nullptr;
   ResizeFn resize_ = nullptr;
   TouchFn touch_ = nullptr;
   ScreenFn screen_fn_ = nullptr;
@@ -297,6 +308,13 @@ class EngineView {
   bool coreLeftDown_ = false;
   bool coreMiddleDown_ = false;
   bool coreRightDown_ = false;
+  // The most recent point inside Gecko. Controller scrolling uses it so an
+  // open menu is scrolled under the cursor; before there is one, use center.
+  int32_t lastInputX_ = 0;
+  int32_t lastInputY_ = 0;
+  bool haveInputPoint_ = false;
+  unsigned long long lastGamepadPoll_ = 0;
+  bool gamepadApiUnavailable_ = false;
 
   bool typing_ = false;    // text input is wanted right now
   // The engine's focus serial at the last raise, the keyboard the sink was
@@ -308,6 +326,9 @@ class EngineView {
   bool forceKeyboard_ = false;
   void ApplyInputKind(int32_t kind);
   bool clearing_ = false;  // emptying the sink, so ignore its own change
+  // KeyUp must follow the same path as its KeyDown even if Gecko changes text
+  // focus in between the two events.
+  std::array<bool, 256> forwardedKeys_{};
   int32_t fullWidth_ = 0;
   int32_t fullHeight_ = 0;
   double rawPerView_ = 1.0;

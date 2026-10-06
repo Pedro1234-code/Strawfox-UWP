@@ -20,6 +20,7 @@
 #include <winrt/Windows.Foundation.Metadata.h>
 
 #include "winrt/Windows.Graphics.Display.h"
+#include "winrt/Windows.Gaming.Input.h"
 #include "winrt/Windows.UI.Core.h"
 #include "winrt/Windows.UI.Input.h"
 #include "winrt/Windows.UI.Xaml.Input.h"
@@ -451,15 +452,33 @@ void EngineView::WireKeyboard() {
   // same change.
   auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
 
-  window.KeyDown([this](winrt::Windows::UI::Core::CoreWindow const&,
-                        winrt::Windows::UI::Core::KeyEventArgs const& args) {
-    if (!key_ || !typing_) {
-      return;
+  // Bridge-local flags.  They intentionally are not Gecko's enum values: the
+  // DLL translates them, keeping this UWP host independent of Gecko headers.
+  constexpr uint32_t kShift = 1u << 0;
+  constexpr uint32_t kControl = 1u << 1;
+  constexpr uint32_t kAlt = 1u << 2;
+  constexpr uint32_t kMeta = 1u << 3;
+  auto currentModifiers = [window, kShift, kControl, kAlt, kMeta]() {
+    using winrt::Windows::System::VirtualKey;
+    using winrt::Windows::UI::Core::CoreVirtualKeyStates;
+    auto down = [&window](VirtualKey key) {
+      return (static_cast<uint32_t>(window.GetKeyState(key)) &
+              static_cast<uint32_t>(CoreVirtualKeyStates::Down)) != 0;
+    };
+    uint32_t result = 0;
+    if (down(VirtualKey::Shift)) result |= kShift;
+    if (down(VirtualKey::Control)) result |= kControl;
+    if (down(VirtualKey::Menu)) result |= kAlt;
+    if (down(VirtualKey::LeftWindows) || down(VirtualKey::RightWindows)) {
+      result |= kMeta;
     }
-    // Only the keys that produce no text, so there is nothing here that the
-    // sink's own change also reports. Backspace on an empty sink changes
-    // nothing, and Enter cannot, so neither is delivered twice.
-    const int32_t code = static_cast<int32_t>(args.VirtualKey());
+    return result;
+  };
+
+  auto isModifier = [](int32_t code) {
+    return code == 16 || code == 17 || code == 18 || code == 91 || code == 92;
+  };
+  auto isNonText = [](int32_t code) {
     switch (code) {
       case 8:   // Back
       case 9:   // Tab
@@ -473,14 +492,65 @@ void EngineView::WireKeyboard() {
       case 38:  // Up
       case 39:  // Right
       case 40:  // Down
+      case 45:  // Insert
       case 46:  // Delete
-        Log::Write(L"key: " + std::to_wstring(code) + L" sent to the engine");
-        key_(code);
-        args.Handled(true);
-        break;
+        return true;
       default:
-        break;
+        return code >= 112 && code <= 135;  // F1--F24
     }
+  };
+
+  window.KeyDown([this, currentModifiers, isModifier, isNonText, kControl, kAlt,
+                  kMeta](winrt::Windows::UI::Core::CoreWindow const&,
+                         winrt::Windows::UI::Core::KeyEventArgs const& args) {
+    if (!key2_ && !key_) {
+      return;
+    }
+    const int32_t code = static_cast<int32_t>(args.VirtualKey());
+    const uint32_t mods = currentModifiers();
+
+    // When a Gecko edit field is focused, printable text comes through the
+    // TextBox's TextChanged event (including IME input).  Everything else is
+    // physical keyboard input.  Outside an edit field all keys must go to
+    // Gecko so games and pages receive WASD, Escape, etc.  Modified keys are
+    // sent physically even in an edit field so Ctrl+A/C/V and browser
+    // shortcuts do not get consumed by the invisible TextBox.
+    const bool modified = (mods & (kControl | kAlt | kMeta)) != 0;
+    const bool send = !typing_ || modified || isModifier(code) ||
+                      isNonText(code);
+    if (!send) {
+      return;
+    }
+
+    if (key2_) {
+      key2_(1, code, mods, args.KeyStatus().WasKeyDown ? 1 : 0);
+      if (code >= 0 && code < static_cast<int32_t>(forwardedKeys_.size())) {
+        forwardedKeys_[code] = true;
+      }
+    } else if (isNonText(code)) {
+      // Compatibility with an engine from before the versioned bridge.
+      key_(code);
+    } else {
+      return;
+    }
+    Log::Write(L"key: down " + std::to_wstring(code) + L", modifiers " +
+               std::to_wstring(mods) + L" sent to the engine");
+    args.Handled(true);
+  });
+
+  window.KeyUp([this, currentModifiers](winrt::Windows::UI::Core::CoreWindow const&,
+                                         winrt::Windows::UI::Core::KeyEventArgs const& args) {
+    if (!key2_) {
+      return;
+    }
+    const int32_t code = static_cast<int32_t>(args.VirtualKey());
+    if (code < 0 || code >= static_cast<int32_t>(forwardedKeys_.size()) ||
+        !forwardedKeys_[code]) {
+      return;
+    }
+    forwardedKeys_[code] = false;
+    key2_(0, code, currentModifiers(), 0);
+    args.Handled(true);
   });
 
   // A dialog or a menu here has no title bar -- a headless window has no frame
@@ -616,6 +686,8 @@ bool EngineView::Resolve() {
       ::GetProcAddress(xul, "gecko_w10m_overlay_open"));
   text_ = reinterpret_cast<TextFn>(::GetProcAddress(xul, "gecko_w10m_input_text"));
   key_ = reinterpret_cast<KeyFn>(::GetProcAddress(xul, "gecko_w10m_input_key"));
+  key2_ = reinterpret_cast<Key2Fn>(
+      ::GetProcAddress(xul, "gecko_w10m_input_key2"));
   resize_ =
       reinterpret_cast<ResizeFn>(::GetProcAddress(xul, "gecko_w10m_resize"));
   touch_ = reinterpret_cast<TouchFn>(::GetProcAddress(xul, "gecko_w10m_input_touch"));
@@ -1234,6 +1306,8 @@ void EngineView::Tick() {
     return;
   }
 
+  PollGamepadScroll();
+
   // The engine commonly resolves after XAML's one and only initial
   // SizeChanged notification. Ensure the current room is sent once even when
   // its dimensions equal the values cached by the constructor.
@@ -1554,8 +1628,8 @@ void EngineView::OnPressed(uint32_t id,
 }
 
 void EngineView::OnMoved(uint32_t id,
-                         winrt::Windows::Foundation::Point const& point,
-                         bool isMouse) {
+                          winrt::Windows::Foundation::Point const& point,
+                          bool isMouse) {
   int32_t x = 0;
   int32_t y = 0;
   if (!ToFrame(point, &x, &y)) {
@@ -1563,6 +1637,9 @@ void EngineView::OnMoved(uint32_t id,
   }
 
   if (isMouse) {
+    lastInputX_ = x;
+    lastInputY_ = y;
+    haveInputPoint_ = true;
     if (mouse_) mouse_(0, x, y);
     return;
   }
@@ -1687,6 +1764,9 @@ void EngineView::OnWheel(winrt::Windows::Foundation::Point const& point,
   int32_t x = 0;
   int32_t y = 0;
   if (wheel_ && delta && ToFrame(point, &x, &y)) {
+    lastInputX_ = x;
+    lastInputY_ = y;
+    haveInputPoint_ = true;
     // XAML uses the Win32 WHEEL_DELTA convention (120 per notch). The
     // headless Windows widget converts that to the configured three lines.
     wheel_(x, y, 0.0, static_cast<double>(delta));
@@ -1701,6 +1781,10 @@ void EngineView::OnMouseButton(
   if (!ToFrame(point, &x, &y)) {
     return;
   }
+
+  lastInputX_ = x;
+  lastInputY_ = y;
+  haveInputPoint_ = true;
 
   if (button == 0) {
     touched_ = true;
@@ -1725,6 +1809,61 @@ void EngineView::OnMouseButton(
   } else if (button == 0 && mouse_) {
     // An older engine still gets the left button through the original ABI.
     mouse_(pressed ? 1 : 2, x, y);
+  }
+}
+
+void EngineView::PollGamepadScroll() {
+  if (!wheel_ || gamepadApiUnavailable_) {
+    return;
+  }
+
+  const unsigned long long now = ::GetTickCount64();
+  if (!lastGamepadPoll_) {
+    lastGamepadPoll_ = now;
+    return;
+  }
+  // Do not turn a breakpoint, suspend, or a slow frame into one enormous
+  // scroll. The normal rendering cadence is about 16 ms.
+  const auto elapsed = (std::min)(now - lastGamepadPoll_, 100ull);
+  lastGamepadPoll_ = now;
+
+  try {
+    using winrt::Windows::Gaming::Input::Gamepad;
+    const auto pads = Gamepad::Gamepads();
+    if (pads.Size() == 0) {
+      return;
+    }
+
+    const double value = pads.GetAt(0).GetCurrentReading().RightThumbstickY;
+    constexpr double kDeadZone = 0.18;
+    const double magnitude = std::abs(value);
+    if (magnitude <= kDeadZone) {
+      return;
+    }
+
+    // Remove the stick's dead zone, then use a squared response so gentle
+    // movement remains controllable while full tilt reaches about nine mouse
+    // wheel notches per second.
+    double amount = (magnitude - kDeadZone) / (1.0 - kDeadZone);
+    amount *= amount;
+    if (value < 0) {
+      amount = -amount;
+    }
+    const double delta = amount * 1080.0 *
+                         (static_cast<double>(elapsed) / 1000.0);
+    if (delta == 0.0) {
+      return;
+    }
+
+    const int32_t x = haveInputPoint_ ? lastInputX_ : fullWidth_ / 2;
+    const int32_t y = haveInputPoint_ ? lastInputY_ : fullHeight_ / 2;
+    if (x >= 0 && y >= 0 && fullWidth_ > 0 && fullHeight_ > 0) {
+      wheel_(x, y, 0.0, delta);
+    }
+  } catch (winrt::hresult_error const& error) {
+    // An unavailable Gamepad API must not make every rendered frame throw.
+    gamepadApiUnavailable_ = true;
+    Log::Write(L"gamepad: input API unavailable", std::wstring(error.message()));
   }
 }
 

@@ -243,7 +243,13 @@ void PrepareProfile(const std::wstring& profile, int width, int height,
       "user_pref(\"browser.download.folderList\", 2);\n"
       "user_pref(\"browser.download.useDownloadDir\", true);\n"
       "user_pref(\"browser.download.dir\", \"" + escapedDownloadPath + "\");\n"
-      "user_pref(\"browser.download.lastDir\", \"" + escapedDownloadPath + "\");\n";
+      "user_pref(\"browser.download.lastDir\", \"" + escapedDownloadPath + "\");\n"
+      "// Firefox's desktop sanity test snapshots an offscreen HWND. The "
+      "headless UWP compositor and its video overlay are not represented in "
+      "that snapshot, so the test produces a false failure on this port.\n"
+      "user_pref(\"media.sanity-test.disabled\", true);\n"
+      "user_pref(\"sanity-test.running\", false);\n"
+      "user_pref(\"media.hardware-video-decoding.failed\", false);\n";
   WriteProfileFile(profile + L"\\user.js", prefs);
   Log("bootstrap: profile window " + std::to_string(cssWidth) + "x" +
       std::to_string(cssHeight) + " at " + scaleText + " device pixels per CSS pixel");

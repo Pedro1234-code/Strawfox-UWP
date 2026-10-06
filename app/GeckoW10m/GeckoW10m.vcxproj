@@ -56,6 +56,19 @@
     <GeckoW10mClangCl Condition="'$(GeckoW10mClangCl)'==''">C:\Program Files\LLVM\bin\clang-cl.exe</GeckoW10mClangCl>
     <PackageCertificateThumbprint>2817415E0DFAC624BDB99EA60E7DE6BDFA1667ED</PackageCertificateThumbprint>
     <AppxPackageSigningEnabled>True</AppxPackageSigningEnabled>
+    <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
+    <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
+    <AppxAutoIncrementPackageRevision>True</AppxAutoIncrementPackageRevision>
+    <GenerateTestArtifacts>False</GenerateTestArtifacts>
+    <!-- A single x64 package is intentional. Resource-bundle language
+         splitting mistakes Firefox's ordinary "ml" runtime directory for
+         Malayalam and removes essential modules from the main package. -->
+    <AppxBundle>Never</AppxBundle>
+    <AppxBundlePlatforms>x64</AppxBundlePlatforms>
+    <!-- Also keep language-qualified payload in the main package if the
+         Visual Studio packaging wizard overrides AppxBundle to Always. -->
+    <AppxBundleAutoResourcePackageQualifiers>Scale|DXFeatureLevel</AppxBundleAutoResourcePackageQualifiers>
+    <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
     <GeckoW10mBootstrapFlags>/Od /MDd /D_DEBUG /D_ITERATOR_DEBUG_LEVEL=2</GeckoW10mBootstrapFlags>
@@ -179,17 +192,28 @@
     <Image Include="Assets\Wide310x150Logo.scale-200.png" />
     <Image Include="Assets\Wide310x150Logo.scale-400.png" />
   </ItemGroup>
-  <!-- Package the complete Gecko runtime produced by browser-build.sh. -->
+  <!--
+    Keep the Gecko distribution out of the PRI resource index. Firefox has
+    ordinary runtime directories whose names happen to be UWP qualifiers (for
+    example chrome/toolkit/content/global/ml). When these files are Content,
+    MakePri treats "ml" as the Malayalam language and removes the files from
+    the neutral MSIX. Loose Visual Studio deployment then works while the
+    packaged app cannot load AIFeature.sys.mjs during browser startup.
+
+    They remain None items only for project visibility. The target below adds
+    them to BuiltProjectOutputGroup, whose files are deployed and packaged as
+    architecture payload without being interpreted by MakePri.
+  -->
   <ItemGroup>
-    <Content Include="$(GeckoW10mObj)\dist\bin\**\*">
+    <None Include="$(GeckoW10mObj)\dist\bin\**\*">
       <Link>%(RecursiveDir)%(Filename)%(Extension)</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+      <DeploymentContent>false</DeploymentContent>
+    </None>
     <!-- The bootstrap starts Gecko with browser/ as its application dir. -->
-    <Content Include="$(GeckoW10mObj)\dist\bin\application.ini">
+    <None Include="$(GeckoW10mObj)\dist\bin\application.ini">
       <Link>browser\application.ini</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+      <DeploymentContent>false</DeploymentContent>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="CoreShellDevelopment.pfx" />
@@ -202,4 +226,38 @@
     <SDKReference Include="Microsoft.VCLibs.Desktop, Version=14.0" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <PropertyGroup>
+    <BuiltProjectOutputGroupDependsOn>
+      $(BuiltProjectOutputGroupDependsOn);
+      CollectGeckoW10mRuntimeOutputs
+    </BuiltProjectOutputGroupDependsOn>
+  </PropertyGroup>
+  <Target Name="CollectGeckoW10mRuntimeOutputs">
+    <ItemGroup>
+      <!-- Collect through private item types first. Qualifying every metadata
+           reference is important here: this target runs while the C++ output
+           groups already contain items with their own TargetPath metadata. -->
+      <_GeckoW10mRuntimeFile
+          Include="$(GeckoW10mObj)\dist\bin\**\*"
+          Exclude="$(GeckoW10mObj)\dist\bin\application.ini" />
+      <_GeckoW10mApplicationIni
+          Include="$(GeckoW10mObj)\dist\bin\application.ini" />
+      <_BuiltProjectOutputGroupOutputIntermediate
+          Include="@(_GeckoW10mRuntimeFile->'%(FullPath)')">
+        <FinalOutputPath>%(_GeckoW10mRuntimeFile.FullPath)</FinalOutputPath>
+        <TargetPath>%(_GeckoW10mRuntimeFile.RecursiveDir)%(_GeckoW10mRuntimeFile.Filename)%(_GeckoW10mRuntimeFile.Extension)</TargetPath>
+      </_BuiltProjectOutputGroupOutputIntermediate>
+      <_BuiltProjectOutputGroupOutputIntermediate
+          Include="@(_GeckoW10mApplicationIni->'%(FullPath)')">
+        <FinalOutputPath>%(_GeckoW10mApplicationIni.FullPath)</FinalOutputPath>
+        <TargetPath>application.ini</TargetPath>
+      </_BuiltProjectOutputGroupOutputIntermediate>
+      <_BuiltProjectOutputGroupOutputIntermediate
+          Include="@(_GeckoW10mApplicationIni->'%(FullPath)')"
+          KeepDuplicates="true">
+        <FinalOutputPath>%(_GeckoW10mApplicationIni.FullPath)</FinalOutputPath>
+        <TargetPath>browser\application.ini</TargetPath>
+      </_BuiltProjectOutputGroupOutputIntermediate>
+    </ItemGroup>
+  </Target>
 </Project>
