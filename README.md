@@ -5,16 +5,19 @@ enabled**, inside a UWP app.
 
 ## Features
 
-- Native USB mouse support on Xbox.
-- Can use up to 5gb of RAM, not limited by Edge's memory limitations.
-- Multitab. Can run multiple tabs on background, unlike Edge.
-- Download support* (unlike Edge)
-- Upload support (unlike Edge)
-- Addon support (unlike)
-- Inspect/Dev Tools present.
-- And more.
+Comparison with the Xbox's built-in Edge browser:
 
-*In the first Download, it will open a picker asking to choose a Download folder. This is the only workaround for Xbox.
+| Capability | Edge on Xbox | Firefox port |
+| --- | --- | --- |
+| USB mouse input | Limited console-oriented browsing input | Native mouse support, including desktop-style pointer input |
+| Memory available to the browser | Subject to Edge's Xbox memory limit | Up to 5 GB available to the app |
+| Tabs in the background | No background multi-tab browsing | Multiple tabs can remain active in the background |
+| Download files | Not available | Available* |
+| Upload files | Not available | Available through the system file picker |
+| Add-ons | Not available | Firefox add-ons supported |
+| Developer tools | Not available | Inspector and Developer Tools included |
+
+*On the first download, the app asks the user to choose a destination folder. Xbox requires this user-granted folder permission before the browser can export downloaded files.
 
 ## Limitations
 
