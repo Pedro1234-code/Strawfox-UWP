@@ -7,9 +7,9 @@ enabled**, inside a UWP app.
 
 Comparison with the Xbox's built-in Edge browser:
 
-| Capability | Edge on Xbox | Firefox port |
+| Capability | Edge on Xbox | Strawfox |
 | --- | --- | --- |
-| USB mouse input | Limited console-oriented browsing input | Native mouse support, including desktop-style pointer input |
+| USB mouse input | Native mouse support | Native mouse support |
 | Memory available to the browser | Subject to Edge's Xbox memory limit | Up to 5 GB available to the app |
 | Tabs in the background | No background multi-tab browsing | Multiple tabs can remain active in the background |
 | Download files | Not available | Available* |
