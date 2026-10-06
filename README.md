@@ -27,10 +27,10 @@ Comparison with the Xbox's built-in Edge browser:
 
 ## Limitations
 
-- WebAssembly currently unavailable.
 - Can often freeze. The issues are being investigated.
 - No sandbox, due to the nature of the UWP isolated environment.
 - It first downloads to the LocalStorage and then moves to the user Downloads folder. Due to this, the file will appear as "Deleted" in the Downloads popup. This will be fixed.
+- Gamepad navigation is still WIP. I strongly recommend to use a mouse and a keyboard.
 
  
 ## How Gecko runs under UWP
