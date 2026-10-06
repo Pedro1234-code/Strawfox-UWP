@@ -13,6 +13,7 @@
 #include <string>
 
 #include "client/DrmBridge.h"
+#include "client/DownloadBroker.h"
 #include "client/Log.h"
 #include "engine/CrashProbe.h"
 #include "engine/OverlayProbe.h"
@@ -131,9 +132,10 @@ bool ApplyVideoClip(CompositeTransform const& aTransform) {
   }
   const int32_t clipX = p.clipX + p.trimLeft;
   const int32_t clipY = p.clipY + p.trimTop;
-  const int32_t clipWidth = std::max(0, p.clipWidth - p.trimLeft - p.trimRight);
+  const int32_t clipWidth =
+      (std::max)(0, p.clipWidth - p.trimLeft - p.trimRight);
   const int32_t clipHeight =
-      std::max(0, p.clipHeight - p.trimTop - p.trimBottom);
+      (std::max)(0, p.clipHeight - p.trimTop - p.trimBottom);
   const bool whole = clipX == p.x && clipY == p.y && clipWidth == p.width &&
                      clipHeight == p.height;
   if (whole) {
@@ -248,10 +250,12 @@ void StackVideoPanel(bool above) {
 
 
 EngineView::EngineView(int32_t pixelWidth, int32_t pixelHeight,
-                       double rawPerView, bool withPanel)
+                       double rawPerView, bool withPanel,
+                       bool usePhysicalScreenRoom)
     : fullWidth_(pixelWidth),
       fullHeight_(pixelHeight),
-      rawPerView_(rawPerView > 0 ? rawPerView : 1.0) {
+      rawPerView_(rawPerView > 0 ? rawPerView : 1.0),
+      usePhysicalScreenRoom_(usePhysicalScreenRoom) {
   // What the engine presents to when it draws on the GPU. Normally created
   // whether or not that succeeds: it stays empty and invisible under the
   // picture if the engine falls back to drawing in software, so there is no
@@ -305,23 +309,38 @@ EngineView::EngineView(int32_t pixelWidth, int32_t pixelHeight,
 
   image_.PointerPressed([this](winrt::Windows::Foundation::IInspectable const&,
                                Input::PointerRoutedEventArgs const& args) {
+    const bool mouse = args.Pointer().PointerDeviceType() ==
+                       winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+    if (mouse) return;  // CoreWindow owns the mouse stream on Xbox.
     touched_ = true;
-    OnPressed(args.Pointer().PointerId(), args.GetCurrentPoint(image_).Position());
+    OnPressed(args.Pointer().PointerId(),
+              args.GetCurrentPoint(image_).Position(), mouse);
     image_.CapturePointer(args.Pointer());
   });
   image_.PointerMoved([this](winrt::Windows::Foundation::IInspectable const&,
                              Input::PointerRoutedEventArgs const& args) {
-    OnMoved(args.Pointer().PointerId(), args.GetCurrentPoint(image_).Position());
+    const bool mouse = args.Pointer().PointerDeviceType() ==
+                       winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+    if (mouse) return;
+    OnMoved(args.Pointer().PointerId(), args.GetCurrentPoint(image_).Position(),
+            mouse);
   });
   image_.PointerReleased([this](winrt::Windows::Foundation::IInspectable const&,
                                 Input::PointerRoutedEventArgs const& args) {
-    OnReleased(args.Pointer().PointerId(), args.GetCurrentPoint(image_).Position());
+    const bool mouse = args.Pointer().PointerDeviceType() ==
+                       winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+    if (mouse) return;
+    OnReleased(args.Pointer().PointerId(),
+               args.GetCurrentPoint(image_).Position(), mouse);
     image_.ReleasePointerCapture(args.Pointer());
   });
   image_.PointerCaptureLost(
       [this](winrt::Windows::Foundation::IInspectable const&,
              Input::PointerRoutedEventArgs const& args) {
-        OnCaptureLost(args.Pointer().PointerId());
+        if (args.Pointer().PointerDeviceType() !=
+            winrt::Windows::Devices::Input::PointerDeviceType::Mouse) {
+          OnCaptureLost(args.Pointer().PointerId(), false);
+        }
       });
 
   // On the hardware path the picture is the panel, not the image -- the image
@@ -330,23 +349,38 @@ EngineView::EngineView(int32_t pixelWidth, int32_t pixelHeight,
   if (panel_) {
     panel_.PointerPressed([this](winrt::Windows::Foundation::IInspectable const&,
                                  Input::PointerRoutedEventArgs const& args) {
+      const bool mouse = args.Pointer().PointerDeviceType() ==
+                         winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+      if (mouse) return;
       touched_ = true;
-      OnPressed(args.Pointer().PointerId(), args.GetCurrentPoint(panel_).Position());
+      OnPressed(args.Pointer().PointerId(),
+                args.GetCurrentPoint(panel_).Position(), mouse);
       panel_.CapturePointer(args.Pointer());
     });
     panel_.PointerMoved([this](winrt::Windows::Foundation::IInspectable const&,
                                Input::PointerRoutedEventArgs const& args) {
-      OnMoved(args.Pointer().PointerId(), args.GetCurrentPoint(panel_).Position());
+      const bool mouse = args.Pointer().PointerDeviceType() ==
+                         winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+      if (mouse) return;
+      OnMoved(args.Pointer().PointerId(), args.GetCurrentPoint(panel_).Position(),
+              mouse);
     });
     panel_.PointerReleased([this](winrt::Windows::Foundation::IInspectable const&,
                                   Input::PointerRoutedEventArgs const& args) {
-      OnReleased(args.Pointer().PointerId(), args.GetCurrentPoint(panel_).Position());
+      const bool mouse = args.Pointer().PointerDeviceType() ==
+                         winrt::Windows::Devices::Input::PointerDeviceType::Mouse;
+      if (mouse) return;
+      OnReleased(args.Pointer().PointerId(),
+                 args.GetCurrentPoint(panel_).Position(), mouse);
       panel_.ReleasePointerCapture(args.Pointer());
     });
     panel_.PointerCaptureLost(
         [this](winrt::Windows::Foundation::IInspectable const&,
                Input::PointerRoutedEventArgs const& args) {
-          OnCaptureLost(args.Pointer().PointerId());
+          if (args.Pointer().PointerDeviceType() !=
+              winrt::Windows::Devices::Input::PointerDeviceType::Mouse) {
+            OnCaptureLost(args.Pointer().PointerId(), false);
+          }
         });
   }
 
@@ -570,6 +604,8 @@ bool EngineView::Resolve() {
   copy_ = reinterpret_cast<CopyFn>(::GetProcAddress(xul, "gecko_w10m_frame_copy"));
   mouse_ =
       reinterpret_cast<MouseFn>(::GetProcAddress(xul, "gecko_w10m_input_mouse"));
+  mouseButton_ = reinterpret_cast<MouseButtonFn>(
+      ::GetProcAddress(xul, "gecko_w10m_input_mouse2"));
   wheel_ =
       reinterpret_cast<WheelFn>(::GetProcAddress(xul, "gecko_w10m_input_wheel"));
   wanted_ = reinterpret_cast<WantedFn>(
@@ -602,6 +638,14 @@ bool EngineView::Resolve() {
     if (set_fullscreen_) {
       set_fullscreen_(&FullscreenChanged);
       Log::Write(L"view: the engine can now ask for the whole screen");
+    }
+  }
+  if (!set_file_picker_) {
+    set_file_picker_ = reinterpret_cast<SetFilePickerSinkFn>(
+        ::GetProcAddress(xul, "gecko_w10m_set_file_picker_sink"));
+    if (set_file_picker_) {
+      set_file_picker_(&PickFile);
+      Log::Write(L"file picker: engine connected to the UWP broker");
     }
   }
   if (!set_video_layer_ && video_panel_) {
@@ -642,6 +686,8 @@ bool EngineView::Resolve() {
   }
   Log::Write(std::wstring(L"view: touch entry point ") +
              (touch_ ? L"found -- fingers go to APZ" : L"MISSING -- taps and wheel"));
+  Log::Write(std::wstring(L"view: extended mouse entry point ") +
+             (mouseButton_ ? L"found" : L"MISSING -- left button only"));
   panel_fn_ =
       reinterpret_cast<PanelFn>(::GetProcAddress(xul, "gecko_w10m_set_panel"));
   // The other road to the panel: phones whose GPU stops at feature level 9_3
@@ -789,14 +835,28 @@ void EngineView::PushSize() {
   if (!host_) {
     return;
   }
-  const int32_t width =
+  int32_t width =
       static_cast<int32_t>(host_.ActualWidth() * rawPerView_ + 0.5);
-  const int32_t height =
+  int32_t height =
       static_cast<int32_t>(host_.ActualHeight() * rawPerView_ + 0.5);
+  // Xbox reports a smaller TV-safe XAML layout even though the CoreWindow and
+  // SwapChainPanel cover the complete output. Rendering at the layout size is
+  // what leaves the unpainted strip at the right and bottom.
+  if (usePhysicalScreenRoom_ && screenWidth_ > 0 && screenHeight_ > 0) {
+    width = screenWidth_;
+    height = screenHeight_;
+  }
   if (width <= 0 || height <= 0) {
     return;
   }
-  if (width == fullWidth_ && height == fullHeight_) {
+
+  // Giving the panel to ANGLE is independent of a resize. On the initial
+  // layout these dimensions usually equal the values captured from the window
+  // in the constructor; returning first left EGL with no panel until the user
+  // physically resized the window.
+  GivePanelToEngine();
+
+  if (sizeSent_ && width == fullWidth_ && height == fullHeight_) {
     return;
   }
   fullWidth_ = width;
@@ -806,14 +866,13 @@ void EngineView::PushSize() {
   // render thread, where XAML cannot be asked for anything, and it needs the
   // panel itself before EGL makes a surface -- which is early, so this cannot
   // wait for a resize that may never come.
-  GivePanelToEngine();
-
   if (!resize_) {
     return;
   }
   Log::Write(L"view: room is now " + std::to_wstring(width) + L"x" +
              std::to_wstring(height) + L", telling the engine");
   resize_(width, height);
+  sizeSent_ = true;
 }
 
 void EngineView::ApplyInputKind(int32_t kind) {
@@ -901,6 +960,13 @@ void EngineView::FollowTextInput() {
 
 // Gecko calls this from its main thread; Launcher wants the UI thread, so
 // the work is posted to the dispatcher captured when the view was built.
+int32_t EngineView::PickFile(int32_t mode, const char* title,
+                             const char* defaultName, const char* extensions,
+                             char* result, int32_t resultCapacity) {
+  return DownloadBroker::PickFile(mode, title, defaultName, extensions, result,
+                                  resultCapacity);
+}
+
 void EngineView::LaunchSystemUri(const char* utf8) {
   if (!utf8 || !*utf8 || !gUiDispatcher) {
     return;
@@ -1168,6 +1234,20 @@ void EngineView::Tick() {
     return;
   }
 
+  // The engine commonly resolves after XAML's one and only initial
+  // SizeChanged notification. Ensure the current room is sent once even when
+  // its dimensions equal the values cached by the constructor.
+  if (!sizeSent_) {
+    PushSize();
+  }
+
+  // Resolve becomes successful after the initial XAML layout has already
+  // completed. Hand the existing panel over immediately instead of waiting
+  // for a SizeChanged event that may never occur.
+  if (!panelGiven_) {
+    GivePanelToEngine();
+  }
+
   // A URL from outside waits here for a browser window to exist. The engine
   // answers 0 while it has none, so this simply keeps asking.
   if (!pendingUrl_.empty() && open_url_) {
@@ -1317,11 +1397,137 @@ EngineView::Finger* EngineView::FindFinger(uint32_t id) {
   return nullptr;
 }
 
+winrt::Windows::Foundation::Point EngineView::CoreMousePoint(
+    winrt::Windows::Foundation::Point const& point) const {
+  // CoreWindow reports in window coordinates, while ToFrame expects a point
+  // local to the element that displays Gecko. Account for status-bar/safe-area
+  // padding without applying the display scale twice.
+  try {
+    winrt::Windows::UI::Xaml::FrameworkElement target{nullptr};
+    if (panel_) {
+      target = panel_;
+    } else if (image_) {
+      target = image_;
+    }
+    if (target) {
+      const auto origin = target.TransformToVisual(nullptr).TransformPoint({0, 0});
+      return {point.X - origin.X, point.Y - origin.Y};
+    }
+  } catch (...) {
+  }
+  return point;
+}
+
+void EngineView::WireCoreMouse() {
+  using winrt::Windows::Devices::Input::PointerDeviceType;
+  using winrt::Windows::UI::Core::CoreWindow;
+  using winrt::Windows::UI::Core::PointerEventArgs;
+
+  try {
+    if (coreWindow_) return;
+    coreWindow_ = CoreWindow::GetForCurrentThread();
+    if (!coreWindow_) return;
+
+    const auto isMouse = [](auto const& point) {
+      return point && point.PointerDevice() &&
+             point.PointerDevice().PointerDeviceType() ==
+                 PointerDeviceType::Mouse;
+    };
+
+    coreMouseMoved_ = coreWindow_.PointerMoved(
+        [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
+          auto point = args.CurrentPoint();
+          if (!isMouse(point)) return;
+          OnMoved(point.PointerId(), CoreMousePoint(point.Position()), true);
+        });
+
+    coreMousePressed_ = coreWindow_.PointerPressed(
+        [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
+          using winrt::Windows::UI::Input::PointerUpdateKind;
+          auto point = args.CurrentPoint();
+          if (!isMouse(point)) return;
+          const auto properties = point.Properties();
+          const auto position = CoreMousePoint(point.Position());
+          const auto update = properties.PointerUpdateKind();
+          if ((update == PointerUpdateKind::LeftButtonPressed ||
+               properties.IsLeftButtonPressed()) &&
+              !coreLeftDown_) {
+            coreLeftDown_ = true;
+            OnMouseButton(position, 0, true);
+          }
+          if ((update == PointerUpdateKind::MiddleButtonPressed ||
+               properties.IsMiddleButtonPressed()) &&
+              !coreMiddleDown_) {
+            coreMiddleDown_ = true;
+            OnMouseButton(position, 1, true);
+          }
+          if ((update == PointerUpdateKind::RightButtonPressed ||
+               properties.IsRightButtonPressed()) &&
+              !coreRightDown_) {
+            coreRightDown_ = true;
+            OnMouseButton(position, 2, true);
+          }
+        });
+
+    coreMouseReleased_ = coreWindow_.PointerReleased(
+        [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
+          using winrt::Windows::UI::Input::PointerUpdateKind;
+          auto point = args.CurrentPoint();
+          if (!isMouse(point)) return;
+          const auto properties = point.Properties();
+          const auto position = CoreMousePoint(point.Position());
+          const auto update = properties.PointerUpdateKind();
+          if (coreLeftDown_ &&
+              (update == PointerUpdateKind::LeftButtonReleased ||
+               !properties.IsLeftButtonPressed())) {
+            coreLeftDown_ = false;
+            OnMouseButton(position, 0, false);
+          }
+          if (coreMiddleDown_ &&
+              (update == PointerUpdateKind::MiddleButtonReleased ||
+               !properties.IsMiddleButtonPressed())) {
+            coreMiddleDown_ = false;
+            OnMouseButton(position, 1, false);
+          }
+          if (coreRightDown_ &&
+              (update == PointerUpdateKind::RightButtonReleased ||
+               !properties.IsRightButtonPressed())) {
+            coreRightDown_ = false;
+            OnMouseButton(position, 2, false);
+          }
+        });
+
+    coreMouseWheel_ = coreWindow_.PointerWheelChanged(
+        [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
+          auto point = args.CurrentPoint();
+          if (!isMouse(point)) return;
+          OnWheel(CoreMousePoint(point.Position()),
+                  point.Properties().MouseWheelDelta());
+        });
+    Log::Write(L"mouse: CoreWindow stream attached");
+  } catch (winrt::hresult_error const& error) {
+    Log::Write(L"mouse: CoreWindow stream unavailable",
+               std::wstring(error.message()));
+  }
+}
+
+void EngineView::EnableMouse() { WireCoreMouse(); }
+
 void EngineView::OnPressed(uint32_t id,
-                           winrt::Windows::Foundation::Point const& point) {
+                           winrt::Windows::Foundation::Point const& point,
+                           bool isMouse) {
   int32_t x = 0;
   int32_t y = 0;
   if (!ToFrame(point, &x, &y)) {
+    return;
+  }
+  if (isMouse) {
+    if (mouse_) {
+      mouse_(0, x, y);
+      mouse_(1, x, y);
+    }
+    pressed_ = true;
+    pressedId_ = id;
     return;
   }
   if (touch_) {
@@ -1348,13 +1554,18 @@ void EngineView::OnPressed(uint32_t id,
 }
 
 void EngineView::OnMoved(uint32_t id,
-                         winrt::Windows::Foundation::Point const& point) {
+                         winrt::Windows::Foundation::Point const& point,
+                         bool isMouse) {
   int32_t x = 0;
   int32_t y = 0;
   if (!ToFrame(point, &x, &y)) {
     return;
   }
 
+  if (isMouse) {
+    if (mouse_) mouse_(0, x, y);
+    return;
+  }
   if (touch_) {
     Finger* f = FindFinger(id);
     if (!f) {
@@ -1393,7 +1604,19 @@ void EngineView::OnMoved(uint32_t id,
 }
 
 void EngineView::OnReleased(uint32_t id,
-                            winrt::Windows::Foundation::Point const& point) {
+                            winrt::Windows::Foundation::Point const& point,
+                            bool isMouse) {
+  if (isMouse) {
+    if (pressed_ && id == pressedId_) {
+      pressed_ = false;
+      int32_t x = 0;
+      int32_t y = 0;
+      if (mouse_ && ToFrame(point, &x, &y)) {
+        mouse_(2, x, y);
+      }
+    }
+    return;
+  }
   if (touch_) {
     Finger* f = FindFinger(id);
     if (!f) {
@@ -1441,19 +1664,67 @@ void EngineView::OnReleased(uint32_t id,
   mouse_(2, x, y);
 }
 
-void EngineView::OnCaptureLost(uint32_t id) {
+void EngineView::OnCaptureLost(uint32_t id, bool isMouse) {
   // After a release this finger is already gone. Otherwise something took the
   // pointer away mid-gesture, and the engine must hear that the touch ended,
   // or it keeps a finger on the glass that no longer exists.
-  if (Finger* f = FindFinger(id)) {
-    const Finger last = *f;
-    fingers_.erase(fingers_.begin() + (f - fingers_.data()));
-    if (touch_) {
-      touch_(static_cast<int32_t>(id), 3, last.x, last.y);
+  if (!isMouse) {
+    if (Finger* f = FindFinger(id)) {
+      const Finger last = *f;
+      fingers_.erase(fingers_.begin() + (f - fingers_.data()));
+      if (touch_) {
+        touch_(static_cast<int32_t>(id), 3, last.x, last.y);
+      }
     }
   }
   if (pressed_ && id == pressedId_) {
     pressed_ = false;
+  }
+}
+
+void EngineView::OnWheel(winrt::Windows::Foundation::Point const& point,
+                         int32_t delta) {
+  int32_t x = 0;
+  int32_t y = 0;
+  if (wheel_ && delta && ToFrame(point, &x, &y)) {
+    // XAML uses the Win32 WHEEL_DELTA convention (120 per notch). The
+    // headless Windows widget converts that to the configured three lines.
+    wheel_(x, y, 0.0, static_cast<double>(delta));
+  }
+}
+
+void EngineView::OnMouseButton(
+    winrt::Windows::Foundation::Point const& point, int32_t button,
+    bool pressed) {
+  int32_t x = 0;
+  int32_t y = 0;
+  if (!ToFrame(point, &x, &y)) {
+    return;
+  }
+
+  if (button == 0) {
+    touched_ = true;
+    declinedUntilTouch_ = false;
+    if (!pressed) {
+      tapKeyboardCheckAt_ = ::GetTickCount64() + 300;
+    }
+  } else if (button == 2) {
+    Log::Write(std::wstring(L"mouse: right button ") +
+               (pressed ? L"down, " : L"up, ") +
+               (mouseButton_ ? L"sent to engine" : L"engine bridge missing"));
+  }
+
+  // Keep hover and the following button event at exactly the same point. This
+  // matters for popup hit testing, since Firefox chrome menus are separate
+  // headless widgets composited over the main browser window.
+  if (mouse_) {
+    mouse_(0, x, y);
+  }
+  if (mouseButton_) {
+    mouseButton_(pressed ? 1 : 2, button, x, y);
+  } else if (button == 0 && mouse_) {
+    // An older engine still gets the left button through the original ABI.
+    mouse_(pressed ? 1 : 2, x, y);
   }
 }
 

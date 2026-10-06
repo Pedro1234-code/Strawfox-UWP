@@ -21,6 +21,7 @@ class MainPage {
   // A URL from outside the app: another app launching us for a link, or this
   // being the system's browser. Opens in the running browser as a new tab.
   void OpenExternalUrl(std::wstring_view url);
+  void EnableMouse();
 
  private:
   void BuildUi();

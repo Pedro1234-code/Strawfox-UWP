@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build and package the Gecko UWP shell for Windows 10 Mobile (ARM32).
+# Build and package the Gecko UWP shell for Windows x64.
 #
 # The shell is a code-only C++/WinRT XAML app, compiled with MSVC cl.exe: clang
-# implements no SEH on 32-bit ARM Windows and C++/WinRT needs C++ exceptions.
+# uses the UWP C++ workload and the Gecko x64 UWP build.
 # The package carries the ported Gecko binaries from the browser objdir.
 #
 # MSBuild's appx signing step fails here with APPX0107, so the package is built
@@ -39,7 +39,7 @@ STAGE="$OUT/stage"
 VS="$GECKO_W10M_VC"
 SDK="$GECKO_W10M_SDK"
 SDKV="$GECKO_W10M_SDK_VERSION"
-CL="$VS/bin/Hostx64/arm/cl.exe"
+CL="$VS/bin/Hostx64/x64/cl.exe"
 LLVM="$(cygpath -u "$GECKO_W10M_LLVM")"
 BIN="$SDK/bin/$SDKV/x64"
 
@@ -50,7 +50,7 @@ export INCLUDE="$VS/include;$SDK/Include/$SDKV/ucrt;$SDK/Include/$SDKV/shared;$S
 # runs. Headers stay at the newest SDK (cppwinrt lives only there); the
 # libraries can be pinned to the oldest OS the package should start on.
 SDKV_LIB="$GECKO_W10M_SDK_LIB"
-export LIB="$VS/lib/arm/store;$VS/lib/arm;$SDK/Lib/$SDKV_LIB/ucrt/arm;$SDK/Lib/$SDKV_LIB/um/arm"
+export LIB="$VS/lib/x64/store;$VS/lib/x64;$SDK/Lib/$SDKV_LIB/ucrt/x64;$SDK/Lib/$SDKV_LIB/um/x64"
 echo "    shell links against SDK $SDKV_LIB libraries"
 export PATH="$VS/bin/Hostx64/x64:$PATH"
 export MSYS2_ARG_CONV_EXCL="*"
@@ -92,7 +92,7 @@ text = re.sub(r'(<Identity[^>]*?Version=")[0-9.]+(")',
 open(path, "w", encoding="utf-8").write(text)
 PY
 echo "=== version $VERSION (build $BUILD) ==="
-PKG="$OUT/Gecko_${VERSION}_ARM.appx"
+PKG="$OUT/Gecko_${VERSION}_X64.appx"
 
 # A stage left over from the last build must really be gone: files that were
 # just written can still be held open for a moment (the antivirus scans them),
@@ -113,35 +113,29 @@ cd "$APP"
 STAGE_W="$(cygpath -w "$STAGE")"
 OBJDIR_W="$(cygpath -w "$OUT/obj")"
 
-echo "=== compile the shell (cl.exe, ARM, C++/WinRT) ==="
+echo "=== compile the shell (cl.exe, x64, C++/WinRT) ==="
 SRCS="pch.cpp App.cpp MainPage.cpp client/BrowserPreferences.cpp client/DrmBridge.cpp client/EngineView.cpp client/Log.cpp client/SearchEngines.cpp client/TabManager.cpp engine/CrashProbe.cpp engine/OverlayProbe.cpp engine/GeckoEngine.cpp engine/GeckoRuntimeHost.cpp engine/gecko_capi_stub.cpp"
 OBJS=""
 for s in $SRCS; do
   name="$(echo "$s" | tr '/' '_' | sed 's/\.cpp$/.obj/')"
   "$CL" /nologo /c "$(cygpath -w "$APP/$s")" "/Fo:$OBJDIR_W\\$name" \
         /std:c++20 /EHsc /GR- /O2 /utf-8 \
-        /DGECKO_W10M_USE_ENGINE_STUB /D_ARM_ /DWIN32 /D_WIN32 /DNOMINMAX \
+        /DGECKO_W10M_USE_ENGINE_STUB /DWIN32 /D_WIN32 /DWIN64 /DNOMINMAX \
         /DUNICODE /D_UNICODE /DWINAPI_FAMILY=WINAPI_FAMILY_APP \
         "/I$(cygpath -w "$APP")" "/I$(cygpath -w "$SDK/Include/$SDKV/cppwinrt")"
   OBJS="$OBJS $OBJDIR_W\\$name"
 done
 
-echo "=== compile the Gecko bootstrap (clang-cl, ARM) ==="
+echo "=== compile the Gecko bootstrap (clang-cl, x64) ==="
 # This one translation unit includes Gecko headers, and that decides its
 # compiler. mfbt uses clang builtins cl.exe does not have (__builtin_unreachable
-# among them), so it must be clang-cl -- and clang emits no C++ exception
-# handling at all on 32-bit ARM Windows, so exceptions must be off. Gecko is
-# built without them anyway. The rest of the shell is the mirror image: cl.exe
-# with exceptions on, because C++/WinRT requires both. The two halves meet at a
-# plain C boundary in gecko_bootstrap.h.
-#
-# gecko_w10m_arm_intrin.h fills in the MSVC ARM intrinsics the STL calls and clang
-# does not provide; the engine build force-includes it for the same reason.
-"$LLVM/clang-cl.exe" --target=thumbv7-windows-msvc /nologo /c \
+# among them), so it must be clang-cl. The two halves meet at a plain C
+# boundary in gecko_bootstrap.h.
+"$LLVM/clang-cl.exe" --target=x86_64-pc-windows-msvc /nologo /c \
   "$(cygpath -w "$APP/engine/gecko_bootstrap.cpp")" \
   "/Fo:$OBJDIR_W\\engine_gecko_bootstrap.obj" \
-  /std:c++20 /EHs-c- /GR- /O2 /utf-8 -FIgecko_w10m_arm_intrin.h \
-  /DWIN32 /D_WIN32 /DNOMINMAX /DUNICODE /D_UNICODE \
+  /std:c++20 /EHs-c- /GR- /O2 /utf-8 \
+  /DWIN32 /D_WIN32 /DWIN64 /DNOMINMAX /DUNICODE /D_UNICODE \
   /DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP /DXP_WIN /DGECKO_W10M=1 \
   "/I$(cygpath -w "$DIST/../include")" \
   "/I$(cygpath -w "$ROOT/engine/firefox/toolkit/components/startup")"
@@ -156,9 +150,9 @@ echo "=== compat stubs ==="
 for stub in ktmw32; do
   "$CL" /nologo /c "$(cygpath -w "$APP/compat/$stub.c")" \
         "/Fo:$OBJDIR_W\\$stub.obj" /O2 /MT /GS- \
-        /D_ARM_ /DWIN32 /D_WIN32 /DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP
+        /DWIN32 /D_WIN32 /DWIN64 /DWINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP
   "$LLVM/lld-link.exe" "$OBJDIR_W\\$stub.obj" /DLL /APPCONTAINER \
-    /MACHINE:ARM /NODEFAULTLIB /ENTRY:DllMain \
+    /MACHINE:X64 /NODEFAULTLIB /ENTRY:DllMain \
     "/DEF:$(cygpath -w "$APP/compat/$stub.def")" \
     "/OUT:$STAGE_W\\$stub.dll" \
     kernel32.lib
@@ -170,7 +164,7 @@ echo "=== link Gecko.exe ==="
 # bootstrap unit reaches through the mfbt headers. mozglue.dll already ships in
 # the package, so this adds an import and no new payload.
 "$LLVM/lld-link.exe" $OBJS "/OUT:$STAGE_W\\Gecko.exe" /APPCONTAINER \
-  /SUBSYSTEM:WINDOWS,10.0 /ENTRY:wWinMainCRTStartup /MACHINE:ARM \
+  /SUBSYSTEM:WINDOWS,10.0 /ENTRY:wWinMainCRTStartup /MACHINE:X64 \
   "/MAP:$OBJDIR_W\\Gecko.map" \
   "/LIBPATH:$(cygpath -w "$DIST/../lib")" mozglue.lib \
   WindowsApp.lib OneCoreUap.lib   /DELAYLOAD:oleaut32.dll /DELAYLOAD:mozglue.dll delayimp.lib
@@ -196,16 +190,11 @@ cp "$APP/Package.appxmanifest" "$STAGE/AppxManifest.xml"
 mkdir -p "$STAGE/Assets"
 cp "$APP/Assets/"*.png "$STAGE/Assets/"
 
-# The C runtime. $VS/bin/Hostx64/arm holds the x64 binaries the cross-compiler
-# itself runs on, NOT the ARM runtime -- staging from there shipped an x64
-# vcruntime140.dll, and the device's loader answered mozglue.dll with
-# ERROR_BAD_EXE_FORMAT (193) and then xul.dll with ERROR_MOD_NOT_FOUND (126).
-#
-# The right source is the UWP runtime out of the VCLibs framework package:
-# ARM32 and built with /APPCONTAINER, unlike the desktop redist. Its DLLs carry
+# The C runtime comes from the x64 UWP VCLibs framework package rather than the
+# desktop redist next to the compiler. Its DLLs carry
 # an _app suffix and reference each other by that name, while mozglue and xul
 # import the plain names, so both spellings go in the package.
-VCLIBS="C:/Program Files (x86)/Microsoft SDKs/Windows Kits/10/ExtensionSDKs/Microsoft.VCLibs/14.0/Appx/Retail/ARM/Microsoft.VCLibs.arm.14.00.appx"
+VCLIBS="C:/Program Files (x86)/Microsoft SDKs/Windows Kits/10/ExtensionSDKs/Microsoft.VCLibs/14.0/Appx/Retail/x64/Microsoft.VCLibs.x64.14.00.appx"
 if [ -f "$VCLIBS" ]; then
   CRTTMP="$APP/AppPackages/crt"
   rm -rf "$CRTTMP" && mkdir -p "$CRTTMP"
@@ -243,9 +232,9 @@ open(p, 'wb').write(out)
 print('    msvcp140.dll: %d import name(s) rewritten to vcruntime140.dll' % n)
 PYEOF
   rm -rf "$CRTTMP"
-  echo "    CRT from VCLibs 14.00 ARM (UWP, appcontainer), plain names only"
+  echo "    CRT from VCLibs 14.00 x64 (UWP, appcontainer), plain names only"
 else
-  echo "    WARNING: VCLibs ARM package not found, no CRT staged" >&2
+  echo "    WARNING: VCLibs x64 package not found, no CRT staged" >&2
 fi
 
 # The ported engine.
@@ -648,6 +637,9 @@ PREFS
   fi
   rm -rf "$PRITMP"
 
+  # The following compatibility rewrites exist only for the ARM32 phone
+  # binary. x64 has neither Thumb entry points nor the old mobile api-set set.
+  if [ "$GECKO_W10M_ARCH" = arm ]; then
   # Api-set forwarder shims for phones whose OS lacks an api-set name (a
   # Lumia 650 on 1607 lacks api-ms-win-core-fibers-l1-1-0, and the loader
   # refused vcruntime140_app.dll for it). See tools/gen-apiset-shims.py.
@@ -689,6 +681,7 @@ PREFS
       echo "    WARNING: no linker map for ${angle}.dll -- its virtual-call thunks stay broken" >&2
     fi
   done
+  fi
 else
   echo "    WARNING: $DIST not found, packaging the shell alone" >&2
 fi

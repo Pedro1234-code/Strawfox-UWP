@@ -36,5 +36,9 @@ with tarfile.open(crate, "r:gz") as t:
     except TypeError:  # Python older than 3.12
         t.extractall(dest)
 PY
-python "$ROOT/tools/patch-windows-rs-arm32.py" "$DEST/windows-$VERSION/src"
-echo "windows-$VERSION fetched and patched into engine/third_party"
+if [ "${GECKO_W10M_ARCH:-x64}" = arm ]; then
+  python "$ROOT/tools/patch-windows-rs-arm32.py" "$DEST/windows-$VERSION/src"
+  echo "windows-$VERSION fetched and patched for ARM32 into engine/third_party"
+else
+  echo "windows-$VERSION fetched for x64 into engine/third_party"
+fi

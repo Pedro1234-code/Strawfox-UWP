@@ -22,7 +22,7 @@ typedef struct gecko_session gecko_session;
 
 /* ---- Runtime --------------------------------------------------------------
  * One runtime per process. `profile_dir` is a real filesystem path made
- * reachable by the broadFileSystemAccess capability. Single-process: the
+ * inside the app's LocalState. Single-process: the
  * runtime does NOT spawn children. */
 typedef struct {
   const char* profile_dir;   /* UTF-8 */

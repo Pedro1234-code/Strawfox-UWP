@@ -6,11 +6,14 @@
 #   GECKO_W10M_VRAM         drive of the VRAM disk       (R:; "off" to keep everything on C:)
 #   GECKO_W10M_OBJ_SNAPSHOT where the VRAM objdir is kept (C:/rw-obj-vram)
 #   MOZILLABUILD            MozillaBuild                 (C:/mozilla-build)
-#   GECKO_W10M_VC           MSVC toolset with ARM32 tools (newest under VS 2022)
+#   GECKO_W10M_VC           MSVC v145 x64 toolset (newest under Visual Studio)
 #   GECKO_W10M_LLVM         LLVM bin (clang-cl, lld-link) (C:/Program Files/LLVM/bin)
+#   GECKO_W10M_NASM         NASM bin directory            (C:/nasm/nasm-2.16.03)
+#   GECKO_W10M_GMAKE        GNU Make bin directory         (C:/firefox-deps/gmake)
+#   GECKO_W10M_SCCACHE      SCCache bin directory          (project Rust toolchain)
 #   GECKO_W10M_SDK          Windows Kits 10              (C:/Program Files (x86)/Windows Kits/10)
-#   GECKO_W10M_SDK_VERSION  SDK for headers and tools    (10.0.22621.0)
-#   GECKO_W10M_SDK_LIB      SDK the shell links against  (same as above; 10.0.14393.0 for 1607 phones)
+#   GECKO_W10M_SDK_VERSION  SDK for headers and tools    (10.0.26100.0)
+#   GECKO_W10M_SDK_LIB      SDK the shell links against  (same as above)
 #   GECKO_W10M_JOBS         parallel compile jobs        (half the CPUs)
 #
 # The object directory's path is short on purpose: the deepest libwebrtc object
@@ -43,21 +46,28 @@ fi
 export GECKO_W10M_OBJ="${GECKO_W10M_OBJ:-C:/rw-obj}"
 export MOZILLABUILD="${MOZILLABUILD:-C:/mozilla-build}"
 export GECKO_W10M_LLVM="${GECKO_W10M_LLVM:-C:/Program Files/LLVM/bin}"
+export GECKO_W10M_NASM="${GECKO_W10M_NASM:-C:/nasm/nasm-2.16.03}"
+export GECKO_W10M_GMAKE="${GECKO_W10M_GMAKE:-C:/firefox-deps/gmake}"
+export GECKO_W10M_SCCACHE="${GECKO_W10M_SCCACHE:-C:/Users/fcvin/Documents/GitHub/DesktopMode_uwp/.gecko-rust/cargo/bin}"
+export GMAKE="${GMAKE:-$GECKO_W10M_GMAKE/gmake.exe}"
 export GECKO_W10M_SDK="${GECKO_W10M_SDK:-C:/Program Files (x86)/Windows Kits/10}"
-export GECKO_W10M_SDK_VERSION="${GECKO_W10M_SDK_VERSION:-10.0.22621.0}"
+export GECKO_W10M_SDK_VERSION="${GECKO_W10M_SDK_VERSION:-10.0.26100.0}"
 export GECKO_W10M_SDK_LIB="${GECKO_W10M_SDK_LIB:-$GECKO_W10M_SDK_VERSION}"
+export GECKO_W10M_ARCH="${GECKO_W10M_ARCH:-x64}"
+export GECKO_W10M_RUST_TARGET="${GECKO_W10M_RUST_TARGET:-x86_64-uwp-windows-msvc}"
+export MOZ_DXCOMPILER_PATH="${MOZ_DXCOMPILER_PATH:-$GECKO_W10M_SDK/Redist/D3D/x64/dxcompiler.dll}"
+export MOZ_WINDOWS_APP_SDK_DIR="${MOZ_WINDOWS_APP_SDK_DIR:-C:/firefox-deps/windowsappsdk-x64}"
 
-# MSVC supplies headers and libraries to clang-cl and compiles the shell itself
-# (cl.exe: clang has no SEH on 32-bit ARM Windows). It must have the ARM32
-# tools, which VS 2022 17.14 is the last to ship. The newest toolset that has
-# them is picked unless GECKO_W10M_VC names one.
+# MSVC supplies headers/libraries to clang-cl and compiles the shell itself.
+# Pick the newest installed x64 toolset (v145 on Visual Studio 2026) unless
+# GECKO_W10M_VC names one explicitly.
 if [ -z "$GECKO_W10M_VC" ]; then
-  for cl in "C:/Program Files/Microsoft Visual Studio/2022/"*/VC/Tools/MSVC/*/bin/Hostx64/arm/cl.exe; do
-    [ -f "$cl" ] && GECKO_W10M_VC="${cl%/bin/Hostx64/arm/cl.exe}"
+  for cl in /c/Program\ Files/Microsoft\ Visual\ Studio/*/*/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe; do
+    [ -f "$cl" ] && GECKO_W10M_VC="${cl%/bin/Hostx64/x64/cl.exe}"
   done
 fi
-if [ -z "$GECKO_W10M_VC" ] || [ ! -f "$GECKO_W10M_VC/bin/Hostx64/arm/cl.exe" ]; then
-  echo "No MSVC toolset with ARM32 tools found; install the VS 2022 'MSVC ARM build tools' or set GECKO_W10M_VC." >&2
+if [ -z "$GECKO_W10M_VC" ] || [ ! -f "$GECKO_W10M_VC/bin/Hostx64/x64/cl.exe" ]; then
+  echo "No MSVC x64 toolset found; install the Visual Studio UWP C++ workload (v145) or set GECKO_W10M_VC." >&2
   return 1 2> /dev/null || exit 1
 fi
 export GECKO_W10M_VC
@@ -105,9 +115,12 @@ unset _tmp
 # The windows-rs crate, patched for ARM32 by tools/prepare-windows-rs.sh.
 export MOZ_WINDOWS_RS_DIR="$(cygpath -m "$GECKO_W10M_ROOT")/engine/third_party/windows-0.62.2"
 
-export MOZCONFIG="$GECKO_W10M_ROOT/mozconfig/mozconfig.arm-uwp-browser"
+export MOZCONFIG="$GECKO_W10M_ROOT/mozconfig/mozconfig.x64-uwp-browser"
 
 PATH="$HOME/.cargo/bin:$(cygpath -u "$GECKO_W10M_LLVM"):$(cygpath -u "$MOZILLABUILD")/python3:$(cygpath -u "$MOZILLABUILD")/python3/Scripts:$(cygpath -u "$MOZILLABUILD")/bin:$(cygpath -u "$MOZILLABUILD")/msys2/usr/bin:$PATH"
+[ -x "$(cygpath -u "$GECKO_W10M_NASM")/nasm.exe" ] && PATH="$(cygpath -u "$GECKO_W10M_NASM"):$PATH"
+[ -x "$(cygpath -u "$GECKO_W10M_GMAKE")/gmake.exe" ] && PATH="$(cygpath -u "$GECKO_W10M_GMAKE"):$PATH"
+[ -x "$(cygpath -u "$GECKO_W10M_SCCACHE")/sccache.exe" ] && PATH="$(cygpath -u "$GECKO_W10M_SCCACHE"):$PATH"
 [ -d "/c/Program Files/nodejs" ] && PATH="/c/Program Files/nodejs:$PATH"
 export PATH
 
@@ -141,10 +154,7 @@ PY
 
 # The mozconfig force-includes this header (-FI) and finds it through the
 # object directory's dist/include, so it goes there before configure and build.
-gecko_w10m_stage_intrin() {
-  mkdir -p "$GECKO_W10M_OBJ/dist/include"
-  cp -f "$GECKO_W10M_ROOT/mozconfig/gecko_w10m_arm_intrin.h" "$GECKO_W10M_OBJ/dist/include/"
-}
+gecko_w10m_stage_intrin() { :; }
 
 # robocopy, with msys kept from taking its /SWITCHES for paths. Exit codes
 # under 8 are success.

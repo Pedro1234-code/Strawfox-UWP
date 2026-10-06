@@ -12,6 +12,8 @@
  *
  * Link this OR the real engine, never both. See GeckoW10m.vcxproj (GECKO_W10M_USE_ENGINE_STUB).
  */
+#include "pch.h"
+
 #include "gecko_capi.h"
 
 #include <windows.h>
@@ -34,8 +36,13 @@ namespace {
 
 // Runs the JIT probe. Returns true if executable memory works end-to-end.
 bool ProbeJit(std::string& detail) {
+#if defined(_M_X64) || defined(__x86_64__)
+  // x64: mov eax, 42 ; ret
+  const unsigned char code[] = {0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3};
+#else
   // Thumb: movs r0, #42 ; bx lr   ->  2A 20 70 47
   const unsigned char code[] = {0x2A, 0x20, 0x70, 0x47};
+#endif
 
   void* page = ::VirtualAllocFromApp(nullptr, sizeof(code),
                                      MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -59,9 +66,13 @@ bool ProbeJit(std::string& detail) {
 
   ::FlushInstructionCache(::GetCurrentProcess(), page, sizeof(code));
 
-  // Set the Thumb bit on the entry pointer.
   using Fn = int (*)();
+#if defined(_M_X64) || defined(__x86_64__)
+  auto fn = reinterpret_cast<Fn>(page);
+#else
+  // Set the Thumb bit on the entry pointer.
   auto fn = reinterpret_cast<Fn>(reinterpret_cast<uintptr_t>(page) | 1u);
+#endif
   int result = fn();
 
   ::VirtualFree(page, 0, MEM_RELEASE);
@@ -99,7 +110,11 @@ void ProbeDependencies(const std::wstring& xulPath, std::string& detail) {
       reinterpret_cast<ULONG_PTR>(data) & ~static_cast<ULONG_PTR>(0xF));
 
   auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+  // IMAGE_NT_HEADERS/IMAGE_THUNK_DATA follow the architecture selected by
+  // the compiler.  Using the explicit 32-bit structures here made the x64
+  // probe read DataDirectory from the wrong offset, so every real PE64 xul
+  // was incorrectly reported as having no import directory.
+  auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
   auto* sections = IMAGE_FIRST_SECTION(nt);
   const WORD sectionCount = nt->FileHeader.NumberOfSections;
 
@@ -166,14 +181,14 @@ void ProbeDependencies(const std::wstring& xulPath, std::string& detail) {
     DWORD thunkOff = rvaToOffset(thunkRva);
     if (thunkOff) {
       auto* thunk =
-          reinterpret_cast<const IMAGE_THUNK_DATA32*>(base + thunkOff);
+          reinterpret_cast<const IMAGE_THUNK_DATA*>(base + thunkOff);
       for (; thunk->u1.AddressOfData; ++thunk) {
         ++functions;
         FARPROC proc = nullptr;
         std::string label;
 
-        if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG32) {
-          WORD ordinal = static_cast<WORD>(IMAGE_ORDINAL32(thunk->u1.Ordinal));
+        if (IMAGE_SNAP_BY_ORDINAL(thunk->u1.Ordinal)) {
+          WORD ordinal = static_cast<WORD>(IMAGE_ORDINAL(thunk->u1.Ordinal));
           proc = ::GetProcAddress(m, reinterpret_cast<LPCSTR>(
                                          static_cast<ULONG_PTR>(ordinal)));
           label = "#" + std::to_string(ordinal);

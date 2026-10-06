@@ -18,6 +18,7 @@
 
 #include "winrt/Windows.UI.Xaml.Controls.h"
 #include "winrt/Windows.UI.Xaml.Media.Imaging.h"
+#include "winrt/Windows.UI.Core.h"
 #include "winrt/Windows.UI.ViewManagement.h"
 
 namespace gecko_w10m::client {
@@ -30,7 +31,7 @@ class EngineView {
   // withPanel false makes no SwapChainPanel at all: the one structural thing
   // this shell has that the builds which lived did not.
   EngineView(int32_t pixelWidth, int32_t pixelHeight, double rawPerView,
-             bool withPanel);
+             bool withPanel, bool usePhysicalScreenRoom = false);
 
   winrt::Windows::UI::Xaml::Controls::Image Surface() const { return image_; }
   // What the engine presents to when it is drawing on the GPU. It sits under
@@ -75,6 +76,9 @@ class EngineView {
   // through the ordinary resize, so the window and the swap chain change
   // shape together.
   static void FullscreenChanged(int32_t on);
+  static int32_t PickFile(int32_t mode, const char* title,
+                          const char* defaultName, const char* extensions,
+                          char* result, int32_t resultCapacity);
   // The video layer, driven by the engine's compositor thread (see
   // gecko_w10m_set_video_layer_sink). All three post to the UI thread.
   static void VideoLayerAttach(void* surface);
@@ -110,6 +114,9 @@ class EngineView {
 
   void Start();
   void Stop();
+  // Attach Xbox/desktop CoreWindow mouse input only after the app window has
+  // completed activation. Calling more than once is harmless.
+  void EnableMouse();
 
   // Called once, when the engine has drawn something. It is the only
   // evidence that a start succeeded, so it is what takes the splash down
@@ -129,10 +136,19 @@ class EngineView {
   //
   // Every finger is its own touch point, named by its pointer id, so two of
   // them make a pinch. A finger that loses its capture is cancelled.
-  void OnPressed(uint32_t id, winrt::Windows::Foundation::Point const& point);
-  void OnMoved(uint32_t id, winrt::Windows::Foundation::Point const& point);
-  void OnReleased(uint32_t id, winrt::Windows::Foundation::Point const& point);
-  void OnCaptureLost(uint32_t id);
+  void OnPressed(uint32_t id, winrt::Windows::Foundation::Point const& point,
+                 bool mouse);
+  void OnMoved(uint32_t id, winrt::Windows::Foundation::Point const& point,
+               bool mouse);
+  void OnReleased(uint32_t id, winrt::Windows::Foundation::Point const& point,
+                  bool mouse);
+  void OnCaptureLost(uint32_t id, bool mouse);
+  void OnWheel(winrt::Windows::Foundation::Point const& point, int32_t delta);
+  void OnMouseButton(winrt::Windows::Foundation::Point const& point,
+                     int32_t button, bool pressed);
+  void WireCoreMouse();
+  winrt::Windows::Foundation::Point CoreMousePoint(
+      winrt::Windows::Foundation::Point const& point) const;
   bool ToFrame(winrt::Windows::Foundation::Point const& point, int32_t* x,
                int32_t* y) const;
 
@@ -147,6 +163,11 @@ class EngineView {
   using CopyFn = int32_t (*)(void* dest, int32_t capacity, int32_t* width,
                              int32_t* height, uint64_t* serial);
   using MouseFn = void (*)(int32_t message, int32_t x, int32_t y);
+  // Versioned mouse entry point. The original bridge only carried the left
+  // button, so keep it for old engines and use this one when it is available.
+  // button: 0 left, 1 middle, 2 right.
+  using MouseButtonFn = void (*)(int32_t message, int32_t button, int32_t x,
+                                 int32_t y);
   using WheelFn = void (*)(int32_t x, int32_t y, double dx, double dy);
   using WantedFn = int32_t (*)();
   using TextStateFn = uint32_t (*)();
@@ -160,6 +181,8 @@ class EngineView {
   using OpenUrlFn = int32_t (*)(const char* url);
   using SetLauncherFn = void (*)(void (*)(const char*));
   using SetFullscreenSinkFn = void (*)(void (*)(int32_t));
+  using SetFilePickerSinkFn = void (*)(int32_t (*)(
+      int32_t, const char*, const char*, const char*, char*, int32_t));
   using SetBridgeSinkFn = int32_t (*)(void (*)(const char*));
   using BridgeReplyFn = void (*)(const char*);
   using PanelFn = void (*)(void* panel);
@@ -183,6 +206,7 @@ class EngineView {
 
   CopyFn copy_ = nullptr;
   MouseFn mouse_ = nullptr;
+  MouseButtonFn mouseButton_ = nullptr;
   WheelFn wheel_ = nullptr;
   WantedFn wanted_ = nullptr;
   // The focused field's kind and the engine's focus serial (see
@@ -199,6 +223,7 @@ class EngineView {
   OpenUrlFn open_url_ = nullptr;
   SetLauncherFn set_launcher_ = nullptr;
   SetFullscreenSinkFn set_fullscreen_ = nullptr;
+  SetFilePickerSinkFn set_file_picker_ = nullptr;
   SetVideoLayerSinkFn set_video_layer_ = nullptr;
   // The chrome-to-shell message bridge (client/DrmBridge). Armed once the
   // engine's main thread is up, which is later than the exports resolve.
@@ -243,6 +268,7 @@ class EngineView {
   int32_t height_ = 0;
   bool reported_ = false;
   bool panelGiven_ = false;
+  bool sizeSent_ = false;
   bool textInputPending_ = false;
   bool touched_ = false;
   bool declinedUntilTouch_ = false;
@@ -260,6 +286,18 @@ class EngineView {
   double lastY_ = 0;
   double travelled_ = 0;
 
+  // Xbox exposes its mouse through CoreWindow's pointer stream. XAML element
+  // events are retained for touch, while these global events provide the
+  // desktop-style mouse stream used by the FactoryOS shell as well.
+  winrt::Windows::UI::Core::CoreWindow coreWindow_{nullptr};
+  winrt::event_token coreMouseMoved_{};
+  winrt::event_token coreMousePressed_{};
+  winrt::event_token coreMouseReleased_{};
+  winrt::event_token coreMouseWheel_{};
+  bool coreLeftDown_ = false;
+  bool coreMiddleDown_ = false;
+  bool coreRightDown_ = false;
+
   bool typing_ = false;    // text input is wanted right now
   // The engine's focus serial at the last raise, the keyboard the sink was
   // last given, and when to check after a tap whether the keyboard should be
@@ -273,6 +311,7 @@ class EngineView {
   int32_t fullWidth_ = 0;
   int32_t fullHeight_ = 0;
   double rawPerView_ = 1.0;
+  bool usePhysicalScreenRoom_ = false;
 };
 
 }  // namespace gecko_w10m::client

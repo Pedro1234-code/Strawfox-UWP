@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the Rust std library from source for the arm-uwp target and install the
+# Build the Rust std library from source for the selected UWP target and install the
 # produced rlibs into the toolchain's sysroot so rustc finds std directly (the
 # target ships no prebuilt std).
 #
@@ -9,20 +9,15 @@
 # whenever that nightly changes: std built by one rustc cannot be linked by
 # another.
 #
-# The target is our own thumbv7a-uwp-windows-msvchf, not the built-in
-# thumbv7a-uwp-windows-msvc. The two differ in one field, llvm-target, and that
-# field decides whether rustc passes homogeneous float aggregates in the VFP
-# registers. rustc gates that on the llvm-target string ending in "hf", a test
-# meant for gnueabihf triples that no MSVC triple can pass -- so on stock
-# thumbv7a-uwp-windows-msvc a struct of four floats goes in r1-r3 and the stack
-# while clang-cl puts it in s0-s3, and every argument after it lands somewhere
-# the callee does not look. See mozconfig/rust-targets/.
+# The x64 target is built into rustc. This script still builds its standard
+# library from rust-src because the Gecko build uses build-std and needs the
+# resulting rlibs available in the selected nightly's sysroot.
 set -e
 source "$(dirname "$0")/env.sh"
-export CC_thumbv7a_uwp_windows_msvchf="clang-cl"
-export CFLAGS_thumbv7a_uwp_windows_msvchf="--target=thumbv7-windows-msvc"
+export CC_x86_64_uwp_windows_msvc="clang-cl"
+export CFLAGS_x86_64_uwp_windows_msvc="--target=x86_64-pc-windows-msvc"
 export RUSTFLAGS="-Cembed-bitcode=yes -Cpanic=abort -Zunstable-options"
-TARGET=thumbv7a-uwp-windows-msvchf
+TARGET="${GECKO_W10M_RUST_TARGET:-x86_64-uwp-windows-msvc}"
 TC=()
 [ -n "$GECKO_W10M_RUST_TOOLCHAIN" ] && TC=("+$GECKO_W10M_RUST_TOOLCHAIN")
 SYSROOT_DIR="$(cygpath -u "$(rustc "${TC[@]}" --print sysroot)")/lib/rustlib/$TARGET"
@@ -34,7 +29,9 @@ echo "toolchain: $(rustc "${TC[@]}" -V)"
 # msys2 rewrites any variable whose name ends in PATH, and the build never sees
 # the value that was set. The sysroot needs no environment at all.
 mkdir -p "$SYSROOT_DIR"
-cp "$GECKO_W10M_ROOT/mozconfig/rust-targets/$TARGET.json" "$SYSROOT_DIR/target.json"
+if [ -f "$GECKO_W10M_ROOT/mozconfig/rust-targets/$TARGET.json" ]; then
+  cp "$GECKO_W10M_ROOT/mozconfig/rust-targets/$TARGET.json" "$SYSROOT_DIR/target.json"
+fi
 
 WORK="$(mktemp -d -p "$TMPDIR")"; cd "$WORK"
 cargo "${TC[@]}" new --bin stdbuild > /dev/null 2>&1; cd stdbuild

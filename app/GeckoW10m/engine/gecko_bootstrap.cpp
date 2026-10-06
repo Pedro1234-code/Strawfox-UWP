@@ -226,9 +226,24 @@ void PrepareProfile(const std::wstring& profile, int width, int height,
   WriteProfileFile(profile + L"\\xulstore.json", store);
 
   std::string scaleText = std::to_string(scale);
+  std::wstring downloadPath = profile + L"\\download-staging";
+  ::CreateDirectoryW(downloadPath.c_str(), nullptr);
+  std::string downloadPathUtf8 = Narrow(downloadPath);
+  std::string escapedDownloadPath;
+  escapedDownloadPath.reserve(downloadPathUtf8.size() * 2);
+  for (char ch : downloadPathUtf8) {
+    if (ch == '\\' || ch == '"') escapedDownloadPath.push_back('\\');
+    escapedDownloadPath.push_back(ch);
+  }
   std::string prefs =
       "// Written by the shell every start; see gecko_bootstrap.cpp.\n"
-      "user_pref(\"layout.css.devPixelsPerPx\", \"" + scaleText + "\");\n";
+      "user_pref(\"layout.css.devPixelsPerPx\", \"" + scaleText + "\");\n"
+      "// Downloads stay in the app container until DownloadBroker exports "
+      "them through the user's FolderPicker permission.\n"
+      "user_pref(\"browser.download.folderList\", 2);\n"
+      "user_pref(\"browser.download.useDownloadDir\", true);\n"
+      "user_pref(\"browser.download.dir\", \"" + escapedDownloadPath + "\");\n"
+      "user_pref(\"browser.download.lastDir\", \"" + escapedDownloadPath + "\");\n";
   WriteProfileFile(profile + L"\\user.js", prefs);
   Log("bootstrap: profile window " + std::to_string(cssWidth) + "x" +
       std::to_string(cssHeight) + " at " + scaleText + " device pixels per CSS pixel");
@@ -245,6 +260,23 @@ extern "C" int gecko_w10m_gecko_run(const wchar_t* installDir,
                                  int height, double scale) {
   const std::wstring install(installDir ? installDir : L"");
   const std::wstring profile(profileDir ? profileDir : L"");
+
+  // The desktop profile service asks the Windows shell for LocalAppData and
+  // RoamingAppData even when -profile supplies the actual browser profile.
+  // Those shell-folder lookups are not reliable in the Xbox app container.
+  // Point both roots at the package's writable LocalState directory instead.
+  // The profile passed by the host is LocalState\profile, so its parent is the
+  // data root where profiles.ini and installs.ini may safely live.
+  std::wstring dataRoot = profile;
+  const size_t separator = dataRoot.find_last_of(L"\\/");
+  if (separator != std::wstring::npos) {
+    dataRoot.resize(separator);
+  }
+  if (!dataRoot.empty()) {
+    SetEngineEnvironment(L"MOZ_APP_DATA", dataRoot.c_str());
+    SetEngineEnvironment(L"MOZ_LOCAL_APP_DATA", dataRoot.c_str());
+    Log("bootstrap: profile registry roots use package LocalState");
+  }
 
   // Headless, and single process: an app container cannot spawn the content
   // child, and the build is configured for a single process anyway.

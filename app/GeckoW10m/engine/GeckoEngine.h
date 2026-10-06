@@ -51,7 +51,7 @@ class Session {
 
 class Runtime {
  public:
-  // profileDir: a real path unlocked by broadFileSystemAccess (e.g. the app's
+  // profileDir: a real path inside the app's LocalState (e.g. the app's
   // LocalState folder). jitEnabled requires the codeGeneration capability.
   static std::shared_ptr<Runtime> Create(std::wstring_view profileDir,
                                           bool jitEnabled, int dpi);

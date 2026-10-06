@@ -1,0 +1,49 @@
+# GeckoW10m browser configuration for UWP x64.
+# Used by tools/env.sh on a Windows x64 development machine.
+
+ac_add_options --host=x86_64-pc-windows-msvc
+ac_add_options --target=x86_64-pc-windows-msvc
+ac_add_options --enable-project=browser
+mk_add_options MOZ_OBJDIR=${GECKO_W10M_OBJ:-C:/rw-obj}
+ac_add_options --build-backends=RecursiveMake,FasterMake
+
+
+# The port's UWP configure support supplies MOZ_UWP, app-container headers and
+# single-process settings. JIT remains enabled through codeGeneration.
+ac_add_options --enable-uwp
+ac_add_options --enable-jit
+export MOZ_FORCE_DISABLE_E10S=1
+
+# Rust has a built-in UWP x64 target. The UWP standard library is built from
+# rust-src by tools/uwp-install-std.sh when it is not present in the sysroot.
+export RUST_TARGET="x86_64-uwp-windows-msvc"
+export CARGO_BUILD_FLAGS="-Z build-std=std,panic_abort"
+export RUSTFLAGS="$RUSTFLAGS -Cpanic=abort -Zunstable-options"
+
+# Gecko 155 builds with clang-cl; MSVC v145 supplies the UWP headers/libraries.
+export CC="clang-cl --target=x86_64-pc-windows-msvc"
+export CXX="clang-cl --target=x86_64-pc-windows-msvc"
+export HOST_CC="clang-cl"
+export HOST_CXX="clang-cl"
+export LDFLAGS="-APPCONTAINER"
+export CFLAGS="-DU_PLATFORM_HAS_WINUWP_API=1 -DGECKO_W10M=1"
+export CXXFLAGS="-DU_PLATFORM_HAS_WINUWP_API=1 -DGECKO_W10M=1"
+export BINDGEN_CFLAGS="-DGECKO_W10M=1"
+
+ac_add_options --disable-tests
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+ac_add_options --enable-release
+ac_add_options --disable-lto
+
+# Reuse cached C/C++ and Rust compilation results in subsequent builds.
+ac_add_options --with-ccache=sccache
+
+# These are UWP/container restrictions rather than ARM workarounds.
+ac_add_options --without-wasm-sandboxed-libraries
+ac_add_options --disable-launcher-process
+ac_add_options --disable-sandbox
+ac_add_options --disable-updater
+ac_add_options --disable-printing
+ac_add_options --disable-webspeech
+ac_add_options --disable-crashreporter

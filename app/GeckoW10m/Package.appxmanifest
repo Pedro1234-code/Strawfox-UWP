@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!--
   Gecko for Windows 10 Mobile.
 
@@ -6,9 +6,9 @@
 
     * rescap:codeGeneration  -> unlocks VirtualAllocFromApp / VirtualProtectFromApp
                                 with executable page protections, i.e. JIT.
-    * rescap:broadFileSystemAccess + rescap:unrestrictedFileSystemAccess
-                             -> escape the app-container file jail (downloads,
-                                profile, add-on packages).
+    Downloads do not escape the app-container jail directly. Gecko writes to
+    LocalState and the shell exports completed files through a FolderPicker
+    permission persisted in the FutureAccessList.
 
   Restricted capabilities normally require Store approval. On an interop-unlocked
   device they are honoured for a sideloaded, self/interop-signed package.
@@ -33,29 +33,25 @@
     app/GeckoW10m/build-number.txt.
   -->
   <Identity
-      Name="Gecko"
-      Publisher="CN=Computershik"
+      Name="Microsoft.MicrosoftEdge.Gecko"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
       Version="155.0.1.140"
-      ProcessorArchitecture="arm" />
+      ProcessorArchitecture="x64" />
 
   <mp:PhoneIdentity
       PhoneProductId="1c42dda2-b778-4032-9f94-8f852c3ad652"
       PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
   <Properties>
-    <DisplayName>Gecko</DisplayName>
+    <DisplayName>Strawfox</DisplayName>
     <PublisherDisplayName>Computershik</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
   <Dependencies>
-    <!-- W10M range: Threshold 2 (10586) up to the last mobile build (15254). -->
-    <TargetDeviceFamily Name="Windows.Mobile"
-                        MinVersion="10.0.10586.0"
-                        MaxVersionTested="10.0.15254.0" />
     <TargetDeviceFamily Name="Windows.Universal"
-                        MinVersion="10.0.10586.0"
-                        MaxVersionTested="10.0.15254.0" />
+                        MinVersion="10.0.26100.0"
+                        MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>
@@ -65,16 +61,16 @@
 
   <Applications>
     <Application Id="App"
-                 Executable="Gecko.exe"
+                 Executable="GeckoW10m.exe"
                  EntryPoint="Gecko.App">
       <uap:VisualElements
-          DisplayName="Gecko"
-          Description="Gecko web browser for Windows 10 Mobile"
+          DisplayName="Strawfox Browser"
+          Description="Gecko based web browser for UWP."
           BackgroundColor="#1C1B22"
           Square150x150Logo="Assets\Square150x150Logo.png"
           Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile
-            ShortName="Gecko"
+            ShortName="Strawfox"
             Square71x71Logo="Assets\Square71x71Logo.png"
             Square310x310Logo="Assets\Square310x310Logo.png"
             Wide310x150Logo="Assets\Wide310x150Logo.png">
@@ -134,15 +130,10 @@
     <Capability Name="internetClient" />
     <Capability Name="internetClientServer" />
     <Capability Name="privateNetworkClientServer" />
-    <uap:Capability Name="removableStorage" />
     <uap:Capability Name="picturesLibrary" />
 
     <!-- JIT. The whole reason a real Gecko engine can run here. -->
     <rescap:Capability Name="codeGeneration" />
-
-    <!-- Escape the file jail (interop-unlock honours these when sideloaded). -->
-    <rescap:Capability Name="broadFileSystemAccess" />
-    <rescap:Capability Name="unrestrictedFileSystemAccess" />
 
     <!-- Camera / mic / location are brokered through the shell for getUserMedia. -->
     <DeviceCapability Name="microphone" />

@@ -1,3 +1,5 @@
+#include "pch.h"
+
 #include "CrashProbe.h"
 
 #include <windows.h>
@@ -77,9 +79,25 @@ std::wstring DescribeAddress(const void* addr) {
 // consulting them there is no second frame to find. Walking those tables gives
 // a real trace -- and, unlike the capture, one that can start from the context
 // of the thread that faulted rather than from the handler's own stack.
+#if defined(_M_X64)
+using ContextAddress = DWORD64;
+using LookupFunctionEntryFn = PVOID(WINAPI*)(DWORD64, PDWORD64, PVOID);
+using VirtualUnwindFn = PVOID(WINAPI*)(DWORD, DWORD64, DWORD64, PVOID,
+                                       PCONTEXT, PVOID*, PDWORD64, PVOID);
+ContextAddress& ContextPc(CONTEXT& context) { return context.Rip; }
+ContextAddress ContextPc(const CONTEXT& context) { return context.Rip; }
+ContextAddress ContextSp(const CONTEXT& context) { return context.Rsp; }
+ContextAddress ContextThis(const CONTEXT& context) { return context.Rcx; }
+#else
+using ContextAddress = DWORD;
 using LookupFunctionEntryFn = PVOID(WINAPI*)(DWORD, PDWORD, PVOID);
 using VirtualUnwindFn = PVOID(WINAPI*)(DWORD, DWORD, DWORD, PVOID, PCONTEXT,
                                        PVOID*, PDWORD, PVOID);
+ContextAddress& ContextPc(CONTEXT& context) { return context.Pc; }
+ContextAddress ContextPc(const CONTEXT& context) { return context.Pc; }
+ContextAddress ContextSp(const CONTEXT& context) { return context.Sp; }
+ContextAddress ContextThis(const CONTEXT& context) { return context.R0; }
+#endif
 
 LookupFunctionEntryFn gLookupFunctionEntry = nullptr;
 VirtualUnwindFn gVirtualUnwind = nullptr;
@@ -102,21 +120,22 @@ void LogStack(const wchar_t* tag, CONTEXT context) {
   }
 
   for (int depth = 0; depth < 32; ++depth) {
-    if (!context.Pc) return;
+    ContextAddress& pc = ContextPc(context);
+    if (!pc) return;
     Log::WriteFromFault(std::wstring(tag) + L"   " +
-               DescribeAddress(reinterpret_cast<void*>(context.Pc)));
+               DescribeAddress(reinterpret_cast<void*>(pc)));
 
-    DWORD imageBase = 0;
-    PVOID entry = gLookupFunctionEntry(context.Pc, &imageBase, nullptr);
+    ContextAddress imageBase = 0;
+    PVOID entry = gLookupFunctionEntry(pc, &imageBase, nullptr);
     if (!entry) return;
 
     PVOID handlerData = nullptr;
-    DWORD establisher = 0;
-    DWORD previous = context.Pc;
-    gVirtualUnwind(0 /*UNW_FLAG_NHANDLER*/, imageBase, context.Pc, entry,
+    ContextAddress establisher = 0;
+    ContextAddress previous = pc;
+    gVirtualUnwind(0 /*UNW_FLAG_NHANDLER*/, imageBase, pc, entry,
                    &context, &handlerData, &establisher, nullptr);
     // A frame that does not move is a frame that will not move again.
-    if (context.Pc == previous) return;
+    if (ContextPc(context) == previous) return;
   }
 }
 
@@ -127,7 +146,7 @@ void LogStack(const wchar_t* tag, CONTEXT context) {
 // reading; a plausible-looking integer is not a return address unless something
 // claims to be able to unwind it. Stale frames survive on a stack, so these are
 // candidates, not a call chain.
-void LogStackScan(const wchar_t* tag, DWORD sp) {
+void LogStackScan(const wchar_t* tag, ContextAddress sp) {
   if (!gLookupFunctionEntry) return;
 
   MEMORY_BASIC_INFORMATION region{};
@@ -141,8 +160,9 @@ void LogStackScan(const wchar_t* tag, DWORD sp) {
   for (const uintptr_t* word = start; word < limit && printed < 24; ++word) {
     const uintptr_t value = *word;
     if (value < 0x10000) continue;
-    DWORD imageBase = 0;
-    if (!gLookupFunctionEntry(static_cast<DWORD>(value), &imageBase, nullptr)) {
+    ContextAddress imageBase = 0;
+    if (!gLookupFunctionEntry(static_cast<ContextAddress>(value), &imageBase,
+                              nullptr)) {
       continue;
     }
     Log::WriteFromFault(std::wstring(tag) + L"   ?? " +
@@ -273,6 +293,21 @@ std::wstring FaultDetail(const EXCEPTION_RECORD& record) {
 // With no symbols and no debugger this is what is left, and between the two it
 // is usually enough to find the faulting line in the source.
 std::wstring Registers(const CONTEXT& context) {
+#if defined(_M_X64)
+  const DWORD64 values[] = {
+      context.Rax, context.Rbx, context.Rcx, context.Rdx, context.Rsi,
+      context.Rdi, context.R8,  context.R9,  context.R10, context.R11,
+      context.R12, context.R13, context.R14, context.R15};
+  static const wchar_t* names[] = {
+      L" rax=", L" rbx=", L" rcx=", L" rdx=", L" rsi=", L" rdi=",
+      L" r8=",  L" r9=",  L" r10=", L" r11=", L" r12=", L" r13=",
+      L" r14=", L" r15="};
+  std::wstring out;
+  for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+    out += names[i] + Hex(values[i]);
+  }
+  return out + L" rsp=" + Hex(context.Rsp) + L" rbp=" + Hex(context.Rbp);
+#else
   const DWORD values[] = {context.R0,  context.R1,  context.R2,  context.R3,
                           context.R4,  context.R5,  context.R6,  context.R7,
                           context.R8,  context.R9,  context.R10, context.R11,
@@ -282,6 +317,7 @@ std::wstring Registers(const CONTEXT& context) {
     out += L" r" + std::to_wstring(i) + L"=" + Hex(values[i]);
   }
   return out + L" sp=" + Hex(context.Sp) + L" lr=" + Hex(context.Lr);
+#endif
 }
 
 // Thumb-2, so an instruction is two bytes or four and there is no telling
@@ -520,6 +556,11 @@ void ReserveScratch() {
 // the word was supposed to live in, it will fault again somewhere new -- which
 // is a different address, and a different thing to chase.
 bool TryRepair(PEXCEPTION_POINTERS info) {
+#if defined(_M_X64)
+  // This workaround recognizes and modifies one specific ARM Thumb-2
+  // instruction/register state. It is neither applicable nor safe on x64.
+  return false;
+#else
   const EXCEPTION_RECORD& record = *info->ExceptionRecord;
   if (record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return false;
   if (record.NumberParameters < 2) return false;
@@ -550,6 +591,7 @@ bool TryRepair(PEXCEPTION_POINTERS info) {
     Log::FlushFromFault();
   }
   return true;
+#endif
 }
 
 // Words of an object, each resolved to module+offset when it points into
@@ -633,7 +675,7 @@ LONG CALLBACK OnException(PEXCEPTION_POINTERS info) {
   Log::WriteFromFault(L"first-chance: code" + Registers(*info->ContextRecord));
   LogInstruction(L"first-chance:", info->ExceptionRecord->ExceptionAddress);
   LogStack(L"first-chance:", *info->ContextRecord);
-  LogStackScan(L"first-chance:", info->ContextRecord->Sp);
+  LogStackScan(L"first-chance:", ContextSp(*info->ContextRecord));
   Log::FlushFromFault();
 
   if (mendable) {
@@ -643,7 +685,7 @@ LONG CALLBACK OnException(PEXCEPTION_POINTERS info) {
     // shown, +0xc0 an object with a vtable, +0x128 a window handle. Every
     // word that points into a module is written as module+offset, and a word
     // at a vtable is a class once the module's RTTI is read against it.
-    DumpObject(L"this", info->ContextRecord->R0, 0x140);
+    DumpObject(L"this", ContextThis(*info->ContextRecord), 0x140);
     Log::WriteFromFault(
         L"repair: r8 had nowhere to point, so it was given somewhere -- "
         L"carrying on from the instruction that faulted");
@@ -1363,9 +1405,9 @@ void AutopsyRendererThread(const wchar_t* tag) {
   context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
   if (gGetThreadContext(thread, &context)) {
     Log::WriteFromFault(t + L" registers" + Registers(context));
-    LogInstruction(tag, reinterpret_cast<void*>(context.Pc));
+    LogInstruction(tag, reinterpret_cast<void*>(ContextPc(context)));
     LogStack(tag, context);
-    LogStackScan(tag, static_cast<DWORD>(context.Sp));
+    LogStackScan(tag, ContextSp(context));
   } else {
     Log::WriteFromFault(t + L" GetThreadContext failed, error " + std::to_wstring(::GetLastError()));
   }
@@ -1376,18 +1418,18 @@ void AutopsyRendererThread(const wchar_t* tag) {
 // The trace file. A raw address is worthless in the next process -- ASLR moves
 // every module -- so each sample is stored as a module index and an offset,
 // with the names written alongside them.
-constexpr unsigned kTraceMagic = 0x31525452;  // "RTR1"
+constexpr unsigned kTraceMagic = 0x32525452;  // "RTR2" (pointer-sized x64 data)
 constexpr unsigned kMaxModules = 16;
 constexpr unsigned kCapacity = 8192;
 
 struct TraceModule {
   char name[40];
-  unsigned base;
+  uintptr_t base;
 };
 
 struct TraceSample {
   unsigned module;  // index into modules, or kMaxModules when unknown
-  unsigned offset;
+  uintptr_t offset;
 };
 
 struct TraceFile {
@@ -1505,7 +1547,7 @@ unsigned ModuleIndexFor(const void* addr) {
     return kMaxModules;
   }
 
-  unsigned base = reinterpret_cast<unsigned>(mod);
+  uintptr_t base = reinterpret_cast<uintptr_t>(mod);
   for (unsigned i = 0; i < gTrace->moduleCount; ++i) {
     if (gTrace->modules[i].base == base) return i;
   }
@@ -1535,7 +1577,7 @@ DWORD WINAPI SamplerThread(LPVOID param) {
     return 0;
   }
 
-  unsigned last = 0;
+  uintptr_t last = 0;
   DWORD nextReport = ::GetTickCount();
   while (::WaitForSingleObject(target, 0) != WAIT_OBJECT_0) {
     // Often enough to show a climb, rarely enough that the log stays readable.
@@ -1553,7 +1595,7 @@ DWORD WINAPI SamplerThread(LPVOID param) {
     gResumeThread(target);
     if (!ok) break;
 
-    unsigned pc = static_cast<unsigned>(context.Pc);
+    uintptr_t pc = static_cast<uintptr_t>(ContextPc(context));
     // Consecutive samples at one address say nothing new; only movement is
     // worth a slot in the ring.
     if (pc != last) {
@@ -1586,7 +1628,7 @@ DWORD WINAPI SamplerThread(LPVOID param) {
     return 0;
   }
   Log::WriteFromFault(L"sampler: now following the UI thread");
-  unsigned lastPc = 0;
+  uintptr_t lastPc = 0;
   while (::WaitForSingleObject(ui, 0) != WAIT_OBJECT_0) {
     ::Sleep(1);
     if (gSuspendThread(ui) == static_cast<DWORD>(-1)) break;
@@ -1595,7 +1637,7 @@ DWORD WINAPI SamplerThread(LPVOID param) {
     BOOL ok = gGetThreadContext(ui, &context);
     gResumeThread(ui);
     if (!ok) break;
-    unsigned pc = static_cast<unsigned>(context.Pc);
+    uintptr_t pc = static_cast<uintptr_t>(ContextPc(context));
     if (pc == lastPc) continue;
     lastPc = pc;
     unsigned index = ModuleIndexFor(reinterpret_cast<void*>(pc));

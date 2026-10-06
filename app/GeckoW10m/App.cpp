@@ -88,8 +88,14 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     // CoreUIComponents that the process then happily survived.
     try {
     UnhandledException([](auto const&, UnhandledExceptionEventArgs const& e) {
-      client::Log::Write(L"FATAL: XAML unhandled exception",
-                         std::wstring(e.Message()));
+      client::Log::WriteFromFault(
+          L"RECOVERED: XAML unhandled exception: " + std::wstring(e.Message()));
+      client::Log::FlushFromFault();
+      // XAML reports some unsupported/temporarily unavailable UWP operations
+      // as E_FAIL after the browser chrome is already running. Letting those
+      // escape tears down a healthy Gecko process; the affected operation has
+      // already failed, so keep the shell alive and record it instead.
+      e.Handled(true);
     });
 
     } catch (winrt::hresult_error const& e) {
@@ -103,10 +109,14 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
           try {
             e.UnhandledError().Propagate();
           } catch (winrt::hresult_error const& error) {
-            client::Log::Write(L"FATAL: unhandled WinRT error",
-                               std::wstring(error.message()));
+            client::Log::WriteFromFault(
+                L"RECOVERED: WinRT error " +
+                    std::to_wstring(static_cast<uint32_t>(error.code())) +
+                    L": " + std::wstring(error.message()));
+            client::Log::FlushFromFault();
           } catch (...) {
-            client::Log::Write(L"FATAL: unhandled WinRT error, no detail");
+            client::Log::WriteFromFault(L"RECOVERED: WinRT error, no detail");
+            client::Log::FlushFromFault();
           }
         });
 
@@ -231,6 +241,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     }
     EnsureContent();
     Window::Current().Activate();
+    page_->EnableMouse();
   }
 
   void OnActivated(IActivatedEventArgs const& args) {
@@ -273,6 +284,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
       page_->OpenExternalUrl(url);
     }
     Window::Current().Activate();
+    page_->EnableMouse();
   }
 
   void EnsureContent() {

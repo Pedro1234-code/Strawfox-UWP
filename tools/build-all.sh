@@ -30,9 +30,9 @@ fi
 echo "##### 1/5 windows-rs"
 "$SH" "$TOOLS/prepare-windows-rs.sh"
 
-echo "##### 2/5 Rust std for thumbv7a-uwp-windows-msvchf"
-TARGET_DIR="$(cygpath -u "$(rustc --print sysroot)")/lib/rustlib/thumbv7a-uwp-windows-msvchf"
-if ls "$TARGET_DIR"/lib/libstd-*.rlib > /dev/null 2>&1 && [ -f "$TARGET_DIR/target.json" ]; then
+echo "##### 2/5 Rust std for $GECKO_W10M_RUST_TARGET"
+TARGET_DIR="$(cygpath -u "$(rustc --print sysroot)")/lib/rustlib/$GECKO_W10M_RUST_TARGET"
+if ls "$TARGET_DIR"/lib/libstd-*.rlib > /dev/null 2>&1; then
   echo "already installed in $TARGET_DIR"
 else
   "$SH" "$TOOLS/uwp-install-std.sh"

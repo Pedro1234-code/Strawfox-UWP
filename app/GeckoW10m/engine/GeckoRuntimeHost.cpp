@@ -1,3 +1,5 @@
+#include "pch.h"
+
 #include "GeckoRuntimeHost.h"
 
 #include <windows.h>
@@ -35,87 +37,9 @@ std::wstring InstallDirectory() {
   return path;
 }
 
-// Bringing an engine up on a phone means the process may well die where it
-// stands, and an app that dies on every launch cannot even be inspected. The
-// count survives the crash; three failures in a row and Gecko is left alone
-// until the file is removed, leaving a usable shell and a readable log.
-//
-// The install directory is stored with it because it carries the package
-// version, so a new build starts from a clean slate instead of inheriting the
-// previous one's failures.
-constexpr int kMaxAttempts = 3;
-
-std::wstring AttemptsPath(const std::wstring& localState) {
-  return localState + L"\\gecko-attempts.txt";
-}
-
-// Every other launch leaves the engine alone.
-//
-// The device has been faulting inside XAML's own dispatcher shortly after
-// The counter exists so a build that dies on startup cannot lock the phone out
-// of its own browser: three tries and it stops trying. What it measured until
-// now was launches, not failures -- it was cleared only when XRE_main returned,
-// and XRE_main does not return any more. Gecko shuts down through
-// AppShutdown::MaybeFastShutdown, which calls TerminateProcess, so every launch
-// counted as a failure and after three the engine refused to start. Now it is
-// cleared when the engine has drawn something, which is the only definition of
-// a successful start that is worth anything.
-std::wstring gInstallDir;
-
-int ReadAttempts(const std::wstring& localState, const std::wstring& installDir) {
-  CREATEFILE2_EXTENDED_PARAMETERS params{};
-  params.dwSize = sizeof(params);
-  params.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
-  HANDLE h = ::CreateFile2(AttemptsPath(localState).c_str(), GENERIC_READ,
-                           FILE_SHARE_READ, OPEN_EXISTING, &params);
-  if (h == INVALID_HANDLE_VALUE) return 0;
-
-  char buf[1024] = {};
-  DWORD read = 0;
-  ::ReadFile(h, buf, sizeof(buf) - 1, &read, nullptr);
-  ::CloseHandle(h);
-
-  // "<count>|<install directory>"
-  std::string text(buf, read);
-  auto bar = text.find('|');
-  if (bar == std::string::npos) return 0;
-
-  std::wstring recorded = Widen(text.substr(bar + 1).c_str());
-  if (recorded != installDir) {
-    Log::Write(L"gecko: new build, attempt count reset");
-    return 0;
-  }
-  return std::atoi(text.substr(0, bar).c_str());
-}
-
-void WriteAttempts(const std::wstring& localState, const std::wstring& installDir,
-                   int value) {
-  CREATEFILE2_EXTENDED_PARAMETERS params{};
-  params.dwSize = sizeof(params);
-  params.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
-  HANDLE h = ::CreateFile2(AttemptsPath(localState).c_str(), GENERIC_WRITE,
-                           FILE_SHARE_READ, CREATE_ALWAYS, &params);
-  if (h == INVALID_HANDLE_VALUE) return;
-
-  int n = ::WideCharToMultiByte(CP_UTF8, 0, installDir.c_str(), -1, nullptr, 0,
-                                nullptr, nullptr);
-  std::string dir(static_cast<size_t>(n > 0 ? n - 1 : 0), '\0');
-  if (n > 1) {
-    ::WideCharToMultiByte(CP_UTF8, 0, installDir.c_str(), -1, dir.data(), n,
-                          nullptr, nullptr);
-  }
-
-  std::string text = std::to_string(value) + "|" + dir;
-  DWORD written = 0;
-  ::WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
-  ::FlushFileBuffers(h);
-  ::CloseHandle(h);
-}
-
 struct ThreadArgs {
   std::wstring installDir;
   std::wstring profileDir;
-  std::wstring localState;
   int width;
   int height;
   double scale;
@@ -129,24 +53,11 @@ DWORD WINAPI GeckoThread(LPVOID param) {
                              args->height, args->scale);
   Log::WriteNum(L"gecko: runtime exited with", rc);
 
-  // Reaching this line at all means the process stayed alive, so the next
-  // launch starts from a clean slate.
-  WriteAttempts(args->localState, args->installDir, 0);
-
   delete args;
   return 0;
 }
 
 }  // namespace
-
-void MarkGeckoHealthy(const std::wstring& localStatePath) {
-  if (gInstallDir.empty()) {
-    return;
-  }
-  WriteAttempts(localStatePath, gInstallDir, 0);
-  Log::Write(L"gecko: the engine drew a frame, attempt count cleared");
-  gInstallDir.clear();
-}
 
 bool StartGeckoRuntime(const std::wstring& localStatePath, int width,
                        int height, double scale) {
@@ -156,19 +67,24 @@ bool StartGeckoRuntime(const std::wstring& localStatePath, int width,
     return false;
   }
 
-  gInstallDir = installDir;
-
-  int attempts = ReadAttempts(localStatePath, installDir);
-  if (attempts >= kMaxAttempts) {
-    Log::WriteNum(L"gecko: not starting, failed attempts", attempts);
-    Log::Write(L"gecko: delete gecko-attempts.txt in LocalState to try again");
-    return false;
-  }
-  WriteAttempts(localStatePath, installDir, attempts + 1);
-  Log::WriteNum(L"gecko: starting runtime, attempt", attempts + 1);
-
   const std::wstring profileDir = localStatePath + L"\\profile";
   ::CreateDirectoryW(profileDir.c_str(), nullptr);
+
+  // This UWP application is single-instance. If Windows terminated the last
+  // process while it was suspended, Gecko had no orderly shutdown in which to
+  // remove its desktop profile markers. Do not let those stale markers turn a
+  // normal mobile lifecycle into a permanent startup-crash/safe-mode loop.
+  ::DeleteFileW((profileDir + L"\\parent.lock").c_str());
+  ::DeleteFileW((profileDir + L"\\.startup-incomplete").c_str());
+  // Remove the obsolete host-side launch limiter from older packages. It is
+  // never created again.
+  ::DeleteFileW((localStatePath + L"\\gecko-attempts.txt").c_str());
+
+  // Desktop Firefox restarts itself in Safe Mode after several interrupted
+  // startups. The UWP host cannot perform that desktop-style relaunch, so the
+  // restart request would simply close the app on every subsequent launch.
+  // Keep crash accounting/logging, but do not enter that unrecoverable loop.
+  _putenv_s("MOZ_DISABLE_AUTO_SAFE_MODE", "1");
 
   // The rest of the probes went in when the shell started; these need the
   // engine loaded, so they wait until now.
@@ -176,8 +92,7 @@ bool StartGeckoRuntime(const std::wstring& localStatePath, int width,
 
   gecko_w10m_gecko_set_logger(&BridgeLog);
 
-  auto* args = new ThreadArgs{installDir, profileDir, localStatePath, width,
-                              height,    scale};
+  auto* args = new ThreadArgs{installDir, profileDir, width, height, scale};
   // 8 MB, reserved rather than committed. Gecko's main thread does deep work
   // and the executable's default of 1 MB is not what it expects.
   HANDLE thread = ::CreateThread(nullptr, 8 * 1024 * 1024, &GeckoThread, args,

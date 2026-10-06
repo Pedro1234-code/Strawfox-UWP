@@ -6,11 +6,13 @@
 #include <winrt/Windows.Foundation.Metadata.h>
 #include <winrt/Windows.Graphics.Display.h>
 #include <winrt/Windows.System.Diagnostics.h>
+#include <winrt/Windows.System.Profile.h>
 
 #include <atomic>
 #include <thread>
 
 #include "client/Log.h"
+#include "client/DownloadBroker.h"
 #include "engine/CrashProbe.h"
 #include "engine/GeckoRuntimeHost.h"
 #include "engine/OverlayProbe.h"
@@ -48,6 +50,18 @@ SolidColorBrush Brush(Color c) {
   SolidColorBrush b;
   b.Color(c);
   return b;
+}
+
+bool IsXbox() {
+  static const bool value = [] {
+    try {
+      return winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo()
+                 .DeviceFamily() == L"Windows.Xbox";
+    } catch (...) {
+      return false;
+    }
+  }();
+  return value;
 }
 
 }  // namespace
@@ -94,6 +108,7 @@ MainPage::MainPage() {
     Log::Write(line);
   }
   Log::Write(L"LocalState", std::wstring(localState));
+  client::DownloadBroker::Initialize(std::wstring(localState));
   Log::Write(Log::Verbose()
                  ? L"logs: verbose -- the engine's logging and the probes are on"
                  : L"logs: quiet (Settings > About > Verbose logs for debugging "
@@ -286,6 +301,17 @@ MainPage::MainPage() {
     Log::Write(L"view: scale " + std::to_wstring(raw) + L" would leave " +
                std::to_wstring(static_cast<int>(pixelWidth / raw)) +
                L" CSS pixels, too narrow for the chrome; drawing at " +
+                std::to_wstring(cssScale));
+  }
+  // Xbox presents UWP at a TV-oriented logical scale. Keep the framebuffer at
+  // the display's native size, but expose more CSS pixels to Firefox so its
+  // desktop chrome and pages are not oversized. This is the same 70% desktop
+  // scale used by factoryos-10x-shell; only Gecko's CSS scale changes, not
+  // pointer coordinates, swap-chain size or the physical DPI used by APZ.
+  constexpr double kXboxDesktopScale = 0.70;
+  if (IsXbox()) {
+    cssScale *= kXboxDesktopScale;
+    Log::Write(L"view: Xbox desktop scale 70%, Gecko CSS scale " +
                std::to_wstring(cssScale));
   }
   Log::WriteNum(L"cpu: cores visible to the process",
@@ -296,12 +322,16 @@ MainPage::MainPage() {
   // clobbered uniform location in ANGLE, see 0.2.4.6). On the hardware path
   // a launch without a panel has nothing to present and nothing to copy, so
   // the splash never came down -- which is what every second launch did.
-  engineView_ = std::make_unique<client::EngineView>(pixelWidth, pixelHeight,
-                                                     raw, /*withPanel*/ true);
+  engineView_ = std::make_unique<client::EngineView>(
+      pixelWidth, pixelHeight, raw, /*withPanel*/ true,
+      /*usePhysicalScreenRoom*/ IsXbox());
 
   BuildUi();
   WireEngine();
-  WireLog();
+  // The diagnostics controls are not in the visible tree. Forwarding every
+  // Gecko/ANGLE log line to XAML still queued one dispatcher callback per line
+  // and made an unhandled XAML error recursively log and queue another one.
+  // The file log remains available and is the diagnostics surface we use.
 
   tabManager_->AddTab(/*isPrivate*/ false, L"about:home");
   Log::WriteNum(L"tabs after first AddTab", tabManager_->Count());
@@ -313,13 +343,10 @@ MainPage::MainPage() {
   // the JIT probe or xul.dll had worked.
   Navigate(L"about:home");
 
-  engineView_->OnFirstFrame([this, state = std::wstring(localState)]() {
+  engineView_->OnFirstFrame([this]() {
     if (splash_) {
       splash_.Visibility(Visibility::Collapsed);
     }
-    // Drawing is the only proof the engine started; anything short of it could
-    // be a launch that is about to die.
-    engine::MarkGeckoHealthy(state);
   });
   engineView_->Start();
 
@@ -437,7 +464,11 @@ void MainPage::ApplyVisibleBounds() {
     fullscreen = view.IsFullScreenMode();
   } catch (winrt::hresult_error const&) {
   }
-  if (fullscreen) {
+  // VisibleBounds on Xbox reserves a small TV safe-area inset even though the
+  // app is rendered edge-to-edge. Applying it as XAML padding left the Gecko
+  // surface at 1913x1076 on a 1920x1080 display, exposing strips at the right
+  // and bottom. Xbox should use the full CoreWindow just like fullscreen.
+  if (fullscreen || IsXbox()) {
     root_.Padding(ThicknessHelper::FromUniformLength(0));
     return;
   }
@@ -450,8 +481,8 @@ void MainPage::ApplyVisibleBounds() {
   // Negative or absurd values mean the two rectangles are not comparable;
   // padding nothing is better than padding wrongly.
   auto sane = [](double v) { return (v > 0 && v < 400) ? v : 0.0; };
-  root_.Padding(
-      ThicknessHelper::FromLengths(sane(left), sane(top), sane(right), sane(bottom)));
+  root_.Padding(ThicknessHelper::FromLengths(sane(left), sane(top), sane(right),
+                                             sane(bottom)));
 }
 
 void MainPage::BuildUi() {
@@ -723,7 +754,11 @@ void MainPage::BuildUi() {
     client::Log::Write(L"window: the XAML window was closed");
     client::Log::FlushFromFault();
   });
-  view.SetDesiredBoundsMode(ApplicationViewBoundsMode::UseVisible);
+  // Xbox's UseVisible rectangle is the TV safe area (1913x1076 on a
+  // 1920x1080 output). It constrains the entire XAML tree, so clearing the
+  // root padding alone cannot recover the missing edge pixels.
+  view.SetDesiredBoundsMode(IsXbox() ? ApplicationViewBoundsMode::UseCoreWindow
+                                     : ApplicationViewBoundsMode::UseVisible);
   view.VisibleBoundsChanged([this](auto&&, auto&&) {
     auto b = ApplicationView::GetForCurrentView().VisibleBounds();
     client::Log::Write(L"size: ApplicationView.VisibleBoundsChanged " +
@@ -786,11 +821,7 @@ void MainPage::WireEngine() {
 }
 
 void MainPage::WireLog() {
-  auto dispatcher = root_.Dispatcher();
-  client::Log::OnLine([this, dispatcher](std::wstring line) {
-    dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Low,
-                        [this, line] { AppendLogLine(line); });
-  });
+  client::Log::OnLine(nullptr);
 }
 
 void MainPage::AppendLogLine(std::wstring line) {
@@ -804,6 +835,10 @@ void MainPage::OpenExternalUrl(std::wstring_view url) {
   if (engineView_) {
     engineView_->OpenUrl(url);
   }
+}
+
+void MainPage::EnableMouse() {
+  if (engineView_) engineView_->EnableMouse();
 }
 
 void MainPage::Navigate(std::wstring_view entry) {
