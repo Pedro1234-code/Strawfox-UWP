@@ -1,4 +1,5 @@
-# Strawfox Browser
+# <img width="1254" height="1254" alt="geckologo" src="https://github.com/user-attachments/assets/b8563757-0adb-45a0-b608-0d0bf2716e39" />
+Strawfox Browser
 
 A **Gecko**-based browser for Xbox: the real Firefox engine, with **JIT
 enabled**, inside a UWP app.
