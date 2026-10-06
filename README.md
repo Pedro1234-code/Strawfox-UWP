@@ -31,8 +31,22 @@ Comparison with the Xbox's built-in Edge browser:
 - No sandbox, due to the nature of the UWP isolated environment.
 - It first downloads to the LocalStorage and then moves to the user Downloads folder. Due to this, the file will appear as "Deleted" in the Downloads popup. This will be fixed.
 - Gamepad navigation is still WIP. I strongly recommend to use a mouse and a keyboard.
+- I can't guarantee compatibility with all addons.
+- Some problems with video playback on movie sites.
 
- 
+## Issues
+
+If you are facing any issues, open a ticket here on GitHub or on the Xbox Desktop Mode server. Always include the log files:
+
+Instructions (Xbox):
+
+1. Open Device Portal
+2. Click on File Explorer.
+3. Navigate to LocalAppData\Strawfox\LocalState
+4. Download "gecko-boot.txt", "gecko.log", "pc-trace.bin".
+5. Enter the profile folder and download "gecko-notes.log"
+6. Send the downloaded logs on the Issue ticket message.
+
 ## How Gecko runs under UWP
 
 Xbox apps run in the UWP app container, which by default blocks the three
