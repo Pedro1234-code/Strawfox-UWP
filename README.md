@@ -150,7 +150,7 @@ browser built; they are kept for reference and are not part of the build above.
 
 Mozzila, for Firefox.
 
-Computershik45 for the ARM32 UWP port.
+Computershik75 for the ARM32 UWP port.
 
 Codex.
 
