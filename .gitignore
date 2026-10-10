@@ -43,3 +43,4 @@ obj-arm-uwp/
 # Logs and other files fetched from the phone (tools/phone.py)
 /work/
 /app/.vs
+/app_ShellIntegration

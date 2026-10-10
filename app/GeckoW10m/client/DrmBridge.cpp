@@ -203,8 +203,7 @@ void HandleChallenge(double id, JsonObject const& msg) {
     o.SetNamedValue(L"uri", JsonValue::CreateStringValue(soap.Uri() ? soap.Uri().AbsoluteUri() : L""));
     o.SetNamedValue(L"headers", headers);
     Log::Write(L"drm: challenge is " + std::to_wstring(body.size()) +
-               L" bytes; PlayReady's own license URI: " +
-               std::wstring(soap.Uri() ? soap.Uri().AbsoluteUri() : L"(none)"));
+               L" bytes; PlayReady supplied a license URI");
     Send(o);
   } catch (hresult_error const& e) {
     Send(Failure(id, L"challenge failed after [" + note + L"]: " + std::wstring(e.message()), e.code()));

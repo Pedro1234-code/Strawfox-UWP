@@ -428,9 +428,6 @@ void EngineView::WireKeyboard() {
       return;
     }
     auto typed = sink_.Text();
-    Log::Write(L"view: the sink changed, " + std::to_wstring(typed.size()) +
-               L" characters, engine " +
-               std::wstring(text_ && typing_ ? L"told" : L"not told"));
     if (typed.empty()) {
       return;
     }
@@ -533,8 +530,6 @@ void EngineView::WireKeyboard() {
     } else {
       return;
     }
-    Log::Write(L"key: down " + std::to_wstring(code) + L", modifiers " +
-               std::to_wstring(mods) + L" sent to the engine");
     args.Handled(true);
   });
 
@@ -1057,9 +1052,9 @@ void EngineView::LaunchSystemUri(const char* utf8) {
         try {
           winrt::Windows::Foundation::Uri uri(winrt::hstring{wide});
           winrt::Windows::System::Launcher::LaunchUriAsync(uri);
-          Log::Write(L"open: asked the system to open " + wide);
+          Log::Write(L"open: requested a system URI");
         } catch (winrt::hresult_error const& error) {
-          Log::Write(L"open: the system refused " + wide,
+          Log::Write(L"open: the system refused a URI",
                      std::wstring(error.message()));
         }
       });
@@ -1253,7 +1248,6 @@ void EngineView::OpenUrl(std::wstring_view url) {
   }
   pendingUrl_ = std::move(utf8);
   lastOpenAttempt_ = 0;
-  Log::Write(L"open: the phone handed us " + std::wstring(url));
 }
 
 void EngineView::SyncKeyboardMargin() {
@@ -1372,6 +1366,14 @@ void EngineView::Tick() {
       textInputPending_ = false;
       FollowTextInput();
     });
+  }
+
+  // ANGLE owns presentation once the SwapChainPanel path is active. Calling
+  // frame_copy as well takes Gecko's compositor lock from the XAML UI thread
+  // and can freeze the whole host while chrome-heavy pages such as
+  // about:downloads are repainting.
+  if (g_panelPresenting.load()) {
+    return;
   }
 
   // Ask with the serial we last drew. An unchanged engine answers zero without

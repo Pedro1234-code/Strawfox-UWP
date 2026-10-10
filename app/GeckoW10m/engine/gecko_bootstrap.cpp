@@ -99,7 +99,10 @@ void SetEngineEnvironment(const wchar_t* name, const wchar_t* value) {
   }();
 
   ::SetEnvironmentVariableW(name, value);
-  if (crtPutEnv) {
+  // A null value removes the variable through SetEnvironmentVariableW, but
+  // _wputenv_s requires a valid string on the Xbox UCRT. Passing nullptr here
+  // terminates the process during startup before xul.dll is entered.
+  if (crtPutEnv && value != nullptr) {
     crtPutEnv(name, value);
   }
 }
@@ -247,6 +250,12 @@ void PrepareProfile(const std::wstring& profile, int width, int height,
       "// Firefox's desktop sanity test snapshots an offscreen HWND. The "
       "headless UWP compositor and its video overlay are not represented in "
       "that snapshot, so the test produces a false failure on this port.\n"
+      "// A second NV12 composition swap chain can remove the D3D device on "
+      "Xbox (DXGI_ERROR_DEVICE_REMOVED), leaving audio playing while video "
+      "and the browser freeze. Keep video on the main WebRender compositor. "
+      "This user preference also protects existing profiles if an engine "
+      "build still has the experimental overlay enabled by default.\n"
+      "user_pref(\"gfx.webrender.gecko-w10m.video-overlay\", false);\n"
       "user_pref(\"media.sanity-test.disabled\", true);\n"
       "user_pref(\"sanity-test.running\", false);\n"
       "user_pref(\"media.hardware-video-decoding.failed\", false);\n";
@@ -319,11 +328,12 @@ extern "C" int gecko_w10m_gecko_run(const wchar_t* installDir,
   // and sets this). Synchronous and at these levels it is over a thousand
   // lines a second during a video, written by the threads doing the work.
   // Quiet, the last verbose run's file goes too: it can be tens of megabytes.
-  wchar_t verbose[4] = {};
-  if (!::GetEnvironmentVariableW(L"GECKO_W10M_VERBOSE_LOGS", verbose, 4)) {
+  {
     ::DeleteFileW(geckoLog.c_str());
-    Log("bootstrap: quiet logs, Gecko's own logging stays off");
-  } else {
+    SetEngineEnvironment(L"MOZ_LOG", nullptr);
+    SetEngineEnvironment(L"MOZ_LOG_FILE", nullptr);
+    Log("bootstrap: Gecko component logging stays off for privacy");
+  /*
     SetEngineEnvironment(
         L"MOZ_LOG",
         L"timestamp,sync,nsAppRunner:5,XRE:5,nsComponentManager:5,"
@@ -339,7 +349,7 @@ extern "C" int gecko_w10m_gecko_run(const wchar_t* installDir,
         // the response that never comes.
         L"nsHttp:4,cache2:3,nsSocketTransport:3,nsHostResolver:3");
     SetEngineEnvironment(L"MOZ_LOG_FILE", geckoLog.c_str());
-    Log("bootstrap: verbose logs, Gecko's own logging goes to gecko-moz.log");
+    Log("bootstrap: verbose logs disabled"); */
   }
   RedirectStdErrTo(profile + L"\\gecko-stderr.log");
 
