@@ -1372,7 +1372,11 @@ void EngineView::Tick() {
   // frame_copy as well takes Gecko's compositor lock from the XAML UI thread
   // and can freeze the whole host while chrome-heavy pages such as
   // about:downloads are repainting.
-  if (g_panelPresenting.load()) {
+  // Popup/menu widgets are separate headless windows and are composited into
+  // the software frame exposed by frame_copy. Keep that path alive only while
+  // Gecko reports an overlay; otherwise hamburger/context menus disappear.
+  const bool hasChromeOverlay = overlay_ && overlay_() == 1;
+  if (g_panelPresenting.load() && !hasChromeOverlay) {
     return;
   }
 
