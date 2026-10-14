@@ -249,6 +249,7 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     // is registered for http and https with the URL. Without this the app
     // merely opened, which is what "default browser" looked like before.
     std::wstring url;
+    winrt::Windows::Storage::StorageFile activatedFile{nullptr};
     try {
       const auto kind = args.Kind();
       client::Log::Write(L"activation: kind " +
@@ -262,15 +263,11 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
         auto fileArgs = args.as<FileActivatedEventArgs>();
         auto files = fileArgs.Files();
         if (files && files.Size() > 0) {
-          if (auto file =
-                  files.GetAt(0)
-                      .try_as<winrt::Windows::Storage::IStorageItem>()) {
-            // A local file is a URL like any other once it has a scheme.
-            std::wstring path(file.Path());
-            for (auto& ch : path) {
-              if (ch == L'\\') ch = L'/';
-            }
-            url = L"file:///" + path;
+          if (auto file = files.GetAt(0).try_as<winrt::Windows::Storage::StorageFile>()) {
+            // The activation broker authorizes StorageFile, not arbitrary
+            // Win32 access to its path. Stage it privately before Gecko opens
+            // file://, otherwise PDF.js can fail on Xbox despite activation.
+            activatedFile = file;
           }
         }
       }
@@ -280,11 +277,38 @@ struct App : ApplicationT<App, winrt::Windows::UI::Xaml::Markup::IXamlMetadataPr
     }
 
     EnsureContent();
-    if (!url.empty() && page_) {
+    if (activatedFile) {
+      OpenActivatedFile(activatedFile);
+    } else if (!url.empty() && page_) {
       page_->OpenExternalUrl(url);
     }
     Window::Current().Activate();
     page_->EnableMouse();
+  }
+
+  winrt::fire_and_forget OpenActivatedFile(
+      winrt::Windows::Storage::StorageFile file) {
+    auto lifetime = get_strong();
+    try {
+      auto folder = co_await winrt::Windows::Storage::ApplicationData::Current()
+                            .LocalCacheFolder()
+                            .CreateFolderAsync(
+                                L"FirefoxPdf",
+                                winrt::Windows::Storage::CreationCollisionOption::OpenIfExists);
+      auto readable = co_await file.CopyAsync(
+          folder, file.Name(),
+          winrt::Windows::Storage::NameCollisionOption::ReplaceExisting);
+      std::wstring path(readable.Path());
+      for (auto& ch : path) {
+        if (ch == L'\\') ch = L'/';
+      }
+      if (page_) {
+        page_->OpenExternalUrl(L"file:///" + path);
+      }
+    } catch (winrt::hresult_error const& error) {
+      client::Log::Write(L"activation: could not stage local file",
+                         std::wstring(error.message()));
+    }
   }
 
   void EnsureContent() {

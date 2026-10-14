@@ -31,7 +31,8 @@ void gecko_w10m_gecko_set_logger(gecko_w10m_gecko_log_fn fn);
  * show. Gecko has no window of its own here, so this is what its headless
  * screen is told it has; pass 0 to leave Gecko's own default alone. */
 int gecko_w10m_gecko_run(const wchar_t* installDir, const wchar_t* profileDir,
-                      int width, int height, double scale);
+                         const wchar_t* downloadDirectory, int width,
+                         int height, double scale);
 
 #ifdef __cplusplus
 }

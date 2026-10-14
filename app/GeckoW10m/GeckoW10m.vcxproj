@@ -81,6 +81,9 @@
       <!-- C++/CX (/ZW) is incompatible with C++20, while the Windows
            SDK 26100 C++/WinRT headers require at least C++17. -->
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <!-- C++/WinRT fire_and_forget uses the C++17 coroutine TS. MSVC only
+           enables co_await in this language mode when /await is explicit. -->
+      <AdditionalOptions>/await %(AdditionalOptions)</AdditionalOptions>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

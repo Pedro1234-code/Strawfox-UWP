@@ -41,6 +41,7 @@ namespace {
 // The UI thread's dispatcher, kept for the launcher callback, which is called
 // from Gecko's threads and has no way to ask for one.
 winrt::Windows::UI::Core::CoreDispatcher gUiDispatcher{nullptr};
+EngineView* gActiveEngineView = nullptr;
 }  // namespace
 
 namespace {
@@ -257,6 +258,7 @@ EngineView::EngineView(int32_t pixelWidth, int32_t pixelHeight,
       fullHeight_(pixelHeight),
       rawPerView_(rawPerView > 0 ? rawPerView : 1.0),
       usePhysicalScreenRoom_(usePhysicalScreenRoom) {
+  gActiveEngineView = this;
   // What the engine presents to when it draws on the GPU. Normally created
   // whether or not that succeeds: it stays empty and invisible under the
   // picture if the engine falls back to drawing in software, so there is no
@@ -500,10 +502,18 @@ void EngineView::WireKeyboard() {
   window.KeyDown([this, currentModifiers, isModifier, isNonText, kControl, kAlt,
                   kMeta](winrt::Windows::UI::Core::CoreWindow const&,
                          winrt::Windows::UI::Core::KeyEventArgs const& args) {
+    const int32_t code = static_cast<int32_t>(args.VirtualKey());
+    if (code == 27 && pointerLocked_ && exit_pointer_lock_) {
+      // Pointer lock consumes its own Escape. Do not let the same keystroke
+      // also leave DOM fullscreen; a later Escape will do that normally.
+      pointerLocked_ = false;
+      exit_pointer_lock_();
+      args.Handled(true);
+      return;
+    }
     if (!key2_ && !key_) {
       return;
     }
-    const int32_t code = static_cast<int32_t>(args.VirtualKey());
     const uint32_t mods = currentModifiers();
 
     // When a Gecko edit field is focused, printable text comes through the
@@ -671,6 +681,10 @@ bool EngineView::Resolve() {
       reinterpret_cast<MouseFn>(::GetProcAddress(xul, "gecko_w10m_input_mouse"));
   mouseButton_ = reinterpret_cast<MouseButtonFn>(
       ::GetProcAddress(xul, "gecko_w10m_input_mouse2"));
+  mouseDelta_ = reinterpret_cast<MouseDeltaFn>(
+      ::GetProcAddress(xul, "gecko_w10m_input_mouse_delta"));
+  exit_pointer_lock_ = reinterpret_cast<ExitPointerLockFn>(
+      ::GetProcAddress(xul, "gecko_w10m_exit_pointer_lock"));
   wheel_ =
       reinterpret_cast<WheelFn>(::GetProcAddress(xul, "gecko_w10m_input_wheel"));
   wanted_ = reinterpret_cast<WantedFn>(
@@ -707,12 +721,50 @@ bool EngineView::Resolve() {
       Log::Write(L"view: the engine can now ask for the whole screen");
     }
   }
+  if (!set_pointer_lock_) {
+    set_pointer_lock_ = reinterpret_cast<SetPointerLockSinkFn>(
+        ::GetProcAddress(xul, "gecko_w10m_set_pointer_lock_sink"));
+    if (set_pointer_lock_) {
+      set_pointer_lock_(&PointerLockChanged);
+      Log::Write(L"pointer-lock: engine connected to relative mouse input");
+    }
+  }
+  if (!set_cursor_) {
+    set_cursor_ = reinterpret_cast<SetCursorSinkFn>(
+        ::GetProcAddress(xul, "gecko_w10m_set_cursor_sink"));
+    if (set_cursor_) {
+      set_cursor_(&CursorChanged);
+      Log::Write(L"cursor: Gecko CSS cursor connected to the UWP pointer");
+    }
+  }
   if (!set_file_picker_) {
     set_file_picker_ = reinterpret_cast<SetFilePickerSinkFn>(
         ::GetProcAddress(xul, "gecko_w10m_set_file_picker_sink"));
     if (set_file_picker_) {
       set_file_picker_(&PickFile);
       Log::Write(L"file picker: engine connected to the UWP broker");
+    }
+  }
+  if (!set_download_directory_) {
+    set_download_directory_ = reinterpret_cast<SetDownloadDirectoryFn>(
+        ::GetProcAddress(xul, "gecko_w10m_set_download_directory"));
+    if (set_download_directory_) {
+      DownloadBroker::SetDirectoryChangedSink(set_download_directory_);
+      Log::Write(L"download: direct authorized folder connected to Gecko");
+    }
+  }
+  if (!set_file_broker_) {
+    set_file_broker_ = reinterpret_cast<SetFileBrokerFn>(
+        ::GetProcAddress(xul, "gecko_w10m_set_file_broker"));
+    if (set_file_broker_) {
+      static const FileBroker broker{
+          &DownloadBroker::OpenAuthorizedFile,
+          &DownloadBroker::AuthorizedFileExists,
+          &DownloadBroker::StatAuthorizedFile,
+          &DownloadBroker::MoveAuthorizedFile,
+          &DownloadBroker::RemoveAuthorizedFile};
+      set_file_broker_(&broker);
+      Log::Write(L"download: Gecko file operations connected to UWP broker");
     }
   }
   if (!set_video_layer_ && video_panel_) {
@@ -855,10 +907,15 @@ void EngineView::WatchRoom(
 }
 
 void EngineView::PostToUi(std::function<void()> work) {
-  auto dispatcher =
-      winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread().Dispatcher();
-  dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                      [work = std::move(work)]() { work(); });
+  // Engine callbacks arrive on Gecko's main/compositor threads. Those threads
+  // do not own a CoreWindow, so GetForCurrentThread() is null there. Always use
+  // the dispatcher captured when EngineView was constructed on the XAML thread.
+  if (!gUiDispatcher) {
+    return;
+  }
+  gUiDispatcher.RunAsync(
+      winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
+      [work = std::move(work)]() { work(); });
 }
 
 void EngineView::GivePanelToEngine() {
@@ -1234,6 +1291,79 @@ void EngineView::FullscreenChanged(int32_t on) {
       });
 }
 
+void EngineView::PointerLockChanged(int32_t on) {
+  PostToUi([on]() {
+    auto* view = gActiveEngineView;
+    if (!view) return;
+    view->pointerLocked_ = on != 0;
+    try {
+      auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
+      if (on) {
+        window.PointerCursor(nullptr);
+      } else {
+        using winrt::Windows::UI::Core::CoreCursor;
+        using winrt::Windows::UI::Core::CoreCursorType;
+        window.PointerCursor(CoreCursor(CoreCursorType::Arrow, 0));
+      }
+    } catch (...) {
+    }
+    Log::Write(on ? L"pointer-lock: host locked the mouse"
+                  : L"pointer-lock: host released the mouse");
+  });
+}
+
+void EngineView::CursorChanged(int32_t cursor) {
+  PostToUi([cursor]() {
+    using winrt::Windows::UI::Core::CoreCursor;
+    using winrt::Windows::UI::Core::CoreCursorType;
+    auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
+    if (!window) {
+      return;
+    }
+    if (gActiveEngineView && gActiveEngineView->pointerLocked_) {
+      window.PointerCursor(nullptr);
+      return;
+    }
+    CoreCursorType type = CoreCursorType::Arrow;
+    switch (cursor) {
+      case 1: type = CoreCursorType::Wait; break;
+      case 2:
+      case 28: type = CoreCursorType::IBeam; break;
+      case 3:
+      case 15:
+      case 16:
+      case 17:
+      case 19:
+      case 20: type = CoreCursorType::Hand; break;
+      case 4:
+      case 5:
+      case 26:
+      case 32: type = CoreCursorType::SizeNorthSouth; break;
+      case 6:
+      case 7:
+      case 25:
+      case 33: type = CoreCursorType::SizeWestEast; break;
+      case 8:
+      case 9:
+      case 31: type = CoreCursorType::SizeNorthwestSoutheast; break;
+      case 10:
+      case 11:
+      case 30: type = CoreCursorType::SizeNortheastSouthwest; break;
+      case 12: type = CoreCursorType::Cross; break;
+      case 13:
+      case 29: type = CoreCursorType::SizeAll; break;
+      case 14: type = CoreCursorType::Help; break;
+      case 24:
+      case 27: type = CoreCursorType::UniversalNo; break;
+      case 34:
+        window.PointerCursor(nullptr);
+        return;
+      default: break;
+    }
+    window.PointerCursor(CoreCursor(type, 0));
+  });
+}
+
 void EngineView::OpenUrl(std::wstring_view url) {
   if (url.empty()) {
     return;
@@ -1368,16 +1498,31 @@ void EngineView::Tick() {
     });
   }
 
-  // ANGLE owns presentation once the SwapChainPanel path is active. Calling
-  // frame_copy as well takes Gecko's compositor lock from the XAML UI thread
-  // and can freeze the whole host while chrome-heavy pages such as
-  // about:downloads are repainting.
-  // Popup/menu widgets are separate headless windows and are composited into
-  // the software frame exposed by frame_copy. Keep that path alive only while
-  // Gecko reports an overlay; otherwise hamburger/context menus disappear.
+  // Once ANGLE presents into the SwapChainPanel there is no ordinary software
+  // bitmap to update. Calling frame_copy anyway takes Gecko's compositor lock
+  // from the XAML UI thread on every frame and can stall chrome-heavy pages.
+  // Popup/menu widgets are separate headless windows, however, and are
+  // composited into the software frame exposed by frame_copy. Keep that path
+  // alive while an overlay is visible and for one final frame after it closes.
+  // That final transparent frame erases the old menu from the Image above the
+  // SwapChainPanel.
   const bool hasChromeOverlay = overlay_ && overlay_() == 1;
-  if (g_panelPresenting.load() && !hasChromeOverlay) {
-    return;
+  if (g_panelPresenting.load()) {
+    const bool overlayWasVisible = chromeOverlayVisible_;
+    if (!hasChromeOverlay && !overlayWasVisible) {
+      return;
+    }
+
+    // A full-size BGRA frame is several megabytes. Twenty updates a second is
+    // enough for animated chrome popups and leaves the UI thread available for
+    // their pointer events. Opening and closing are never throttled.
+    const unsigned long long now = ::GetTickCount64();
+    if (hasChromeOverlay && overlayWasVisible && lastChromeOverlayCopy_ &&
+        now - lastChromeOverlayCopy_ < 50) {
+      return;
+    }
+    chromeOverlayVisible_ = hasChromeOverlay;
+    lastChromeOverlayCopy_ = now;
   }
 
   // Ask with the serial we last drew. An unchanged engine answers zero without
@@ -1518,8 +1663,19 @@ void EngineView::WireCoreMouse() {
         [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
           auto point = args.CurrentPoint();
           if (!isMouse(point)) return;
+          if (pointerLocked_) return;
           OnMoved(point.PointerId(), CoreMousePoint(point.Position()), true);
         });
+
+    mouseDevice_ = winrt::Windows::Devices::Input::MouseDevice::GetForCurrentView();
+    if (mouseDevice_) {
+      rawMouseMoved_ = mouseDevice_.MouseMoved(
+          [this](auto const&, winrt::Windows::Devices::Input::MouseEventArgs const& args) {
+            if (!pointerLocked_ || !mouseDelta_) return;
+            const auto delta = args.MouseDelta();
+            mouseDelta_(delta.X, delta.Y);
+          });
+    }
 
     coreMousePressed_ = coreWindow_.PointerPressed(
         [this, isMouse](CoreWindow const&, PointerEventArgs const& args) {
@@ -1911,6 +2067,17 @@ void EngineView::Start() {
 }
 
 void EngineView::Stop() {
+  pointerLocked_ = false;
+  if (mouseDevice_ && rawMouseMoved_.value) {
+    mouseDevice_.MouseMoved(rawMouseMoved_);
+    rawMouseMoved_ = {};
+  }
+  if (set_pointer_lock_) {
+    set_pointer_lock_(nullptr);
+  }
+  if (gActiveEngineView == this) {
+    gActiveEngineView = nullptr;
+  }
   if (tick_.value) {
     CompositionTarget::Rendering(tick_);
     tick_ = {};

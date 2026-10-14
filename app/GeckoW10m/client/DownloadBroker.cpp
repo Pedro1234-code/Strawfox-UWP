@@ -29,6 +29,14 @@ using namespace winrt::Windows::UI::Core;
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
 
+MIDL_INTERFACE("5CA296B2-2C25-4D22-B785-B885C8201E6A")
+IStorageItemHandleAccess : public ::IUnknown {
+ public:
+  virtual HRESULT STDMETHODCALLTYPE Create(DWORD access, DWORD sharing,
+                                           DWORD options, ::IUnknown* oplock,
+                                           HANDLE* handle) = 0;
+};
+
 namespace gecko_w10m::client {
 namespace {
 
@@ -40,6 +48,25 @@ std::wstring gSaveStagingPath;
 CoreDispatcher gDispatcher{nullptr};
 std::once_flag gInitializeOnce;
 std::atomic<bool> gPickerStarted{false};
+std::atomic<DownloadBroker::DirectoryChangedFn> gDirectoryChanged{nullptr};
+std::mutex gDestinationMutex;
+std::wstring gAuthorizedRoot;
+
+void CacheDestinationPath(std::wstring path) {
+  std::lock_guard<std::mutex> lock(gDestinationMutex);
+  gAuthorizedRoot = std::move(path);
+}
+
+bool IsCachedAuthorizedPath(const wchar_t* path) {
+  if (!path) return false;
+  std::lock_guard<std::mutex> lock(gDestinationMutex);
+  if (gAuthorizedRoot.empty()) return false;
+  const size_t rootLength = gAuthorizedRoot.size();
+  return _wcsicmp(gAuthorizedRoot.c_str(), path) == 0 ||
+         (wcslen(path) > rootLength &&
+          _wcsnicmp(gAuthorizedRoot.c_str(), path, rootLength) == 0 &&
+          (path[rootLength] == L'\\' || path[rootLength] == L'/'));
+}
 
 struct SeenFile {
   uint64_t size = 0;
@@ -63,9 +90,12 @@ bool HasDestination() {
 
 StorageFolder GetDestination() {
   try {
-    return StorageApplicationPermissions::FutureAccessList()
-        .GetFolderAsync(kDestinationToken)
-        .get();
+    auto folder = StorageApplicationPermissions::FutureAccessList()
+                      .GetFolderAsync(kDestinationToken)
+                      .get();
+    ApplicationData::Current().LocalSettings().Values().Insert(
+        L"DownloadFolderPath", box_value(folder.Path()));
+    return folder;
   } catch (winrt::hresult_error const& error) {
     Log::Write(L"download: saved folder permission is no longer valid",
                std::wstring(error.message()));
@@ -74,8 +104,34 @@ StorageFolder GetDestination() {
           kDestinationToken);
     } catch (...) {
     }
+    CacheDestinationPath({});
     return nullptr;
   }
+}
+
+std::wstring SavedDestinationPath() {
+  if (!HasDestination()) return {};
+  try {
+    auto value = ApplicationData::Current().LocalSettings().Values().TryLookup(
+        L"DownloadFolderPath");
+    return value ? std::wstring(unbox_value<hstring>(value)) : std::wstring{};
+  } catch (...) {
+    return {};
+  }
+}
+
+bool IsAuthorizedChild(StorageFolder const& folder, const wchar_t* path,
+                       std::wstring* leaf) {
+  if (!path || !leaf) return false;
+  std::wstring root(folder.Path());
+  std::wstring candidate(path);
+  if (root.empty() || candidate.size() <= root.size() ||
+      _wcsnicmp(candidate.c_str(), root.c_str(), root.size()) != 0 ||
+      (candidate[root.size()] != L'\\' && candidate[root.size()] != L'/')) {
+    return false;
+  }
+  *leaf = candidate.substr(root.size() + 1);
+  return !leaf->empty() && leaf->find_first_of(L"\\/") == std::wstring::npos;
 }
 
 void RequestDestination();
@@ -229,6 +285,20 @@ void MonitorDownloads() {
   }
 }
 
+void RememberDestination(StorageFolder const& folder) {
+  StorageApplicationPermissions::FutureAccessList().AddOrReplace(
+      kDestinationToken, folder);
+  ApplicationData::Current().LocalSettings().Values().Insert(
+      L"DownloadFolderName", box_value(folder.DisplayName()));
+  ApplicationData::Current().LocalSettings().Values().Insert(
+      L"DownloadFolderPath", box_value(folder.Path()));
+  CacheDestinationPath(std::wstring(folder.Path()));
+  Log::Write(L"download: destination authorised", std::wstring(folder.Path()));
+  if (auto changed = gDirectoryChanged.load()) {
+    changed(folder.Path().c_str());
+  }
+}
+
 void PickDestination() {
   try {
     FolderPicker picker;
@@ -252,12 +322,7 @@ void PickDestination() {
           Log::Write(L"download: folder selection cancelled");
           return;
         }
-        StorageApplicationPermissions::FutureAccessList().AddOrReplace(
-            kDestinationToken, folder);
-        ApplicationData::Current().LocalSettings().Values().Insert(
-            L"DownloadFolderName", box_value(folder.DisplayName()));
-        Log::Write(L"download: destination authorised",
-                   std::wstring(folder.Path()));
+        RememberDestination(folder);
       } catch (winrt::hresult_error const& error) {
         Log::Write(L"download: could not remember destination",
                    std::wstring(error.message()));
@@ -279,9 +344,8 @@ void RequestDestination() {
       ContentDialog dialog;
       dialog.Title(box_value(hstring(L"Choose where to save downloads")));
       dialog.Content(box_value(hstring(
-          L"Gecko keeps a download inside the app until it is complete. "
-          L"Choose a folder now so completed files can be saved somewhere "
-          L"you can access. Windows will remember this permission.")));
+          L"Choose a folder for downloads. Gecko will write files directly "
+          L"there, and Windows will remember this permission.")));
       dialog.PrimaryButtonText(L"Choose folder");
       dialog.CloseButtonText(L"Not now");
       dialog.DefaultButton(ContentDialogButton::Primary);
@@ -308,7 +372,7 @@ void RequestDestination() {
 
 }  // namespace
 
-void DownloadBroker::Initialize(std::wstring_view localStatePath) {
+std::wstring DownloadBroker::Initialize(std::wstring_view localStatePath) {
   std::call_once(gInitializeOnce, [localState = std::wstring(localStatePath)] {
     gStagingPath = localState + L"\\profile\\download-staging";
     gUploadStagingPath = localState + L"\\profile\\upload-staging";
@@ -318,9 +382,160 @@ void DownloadBroker::Initialize(std::wstring_view localStatePath) {
     ::CreateDirectoryW(gUploadStagingPath.c_str(), nullptr);
     ::CreateDirectoryW(gSaveStagingPath.c_str(), nullptr);
     gDispatcher = Window::Current().Dispatcher();
-    Log::Write(L"download: Gecko staging", gStagingPath);
+    Log::Write(L"download: fallback staging", gStagingPath);
     std::thread(MonitorDownloads).detach();
   });
+
+  std::wstring path = SavedDestinationPath();
+  if (!path.empty()) {
+    CacheDestinationPath(path);
+    Log::Write(L"download: using authorized folder directly", path);
+    return path;
+  }
+  Log::Write(L"download: destination not chosen; using fallback staging",
+             gStagingPath);
+  RequestDestination();
+  return gStagingPath;
+}
+
+void DownloadBroker::SetDirectoryChangedSink(DirectoryChangedFn sink) {
+  gDirectoryChanged.store(sink);
+  if (!sink) return;
+  std::wstring path = SavedDestinationPath();
+  if (!path.empty()) {
+    sink(path.c_str());
+    return;
+  }
+  std::thread([sink] {
+    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    if (auto destination = GetDestination()) {
+      const std::wstring restored(destination.Path());
+      if (!restored.empty()) sink(restored.c_str());
+    }
+  }).detach();
+}
+
+intptr_t DownloadBroker::OpenAuthorizedFile(const wchar_t* path,
+                                            int32_t flags) {
+  if (!IsCachedAuthorizedPath(path)) return -1;
+  try {
+    auto folder = GetDestination();
+    std::wstring leaf;
+    if (!folder || !IsAuthorizedChild(folder, path, &leaf)) return -1;
+    StorageFile file{nullptr};
+    if (flags & 4) {
+      const auto collision = (flags & 32)
+                                 ? CreationCollisionOption::FailIfExists
+                                 : CreationCollisionOption::OpenIfExists;
+      file = folder.CreateFileAsync(leaf, collision).get();
+    } else {
+      file = folder.GetFileAsync(leaf).get();
+    }
+    winrt::com_ptr<IStorageItemHandleAccess> access;
+    winrt::check_hresult(reinterpret_cast<::IUnknown*>(winrt::get_abi(file))
+                             ->QueryInterface(__uuidof(IStorageItemHandleAccess),
+                                              access.put_void()));
+    // IStorageItemHandleAccess::Create takes HANDLE_ACCESS_OPTIONS, not a
+    // native ACCESS_MASK. Passing FILE_GENERIC_READ/WRITE-style masks makes
+    // the WinRT implementation reject the call with E_INVALIDARG.
+    DWORD desired = 0;
+    if (flags & 1) desired |= 1;  // HAO_READ
+    if (flags & 2) desired |= 2;  // HAO_WRITE
+    if (!desired) desired = 1;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    winrt::check_hresult(access->Create(desired, 1 | 2 | 4, 0, nullptr, &handle));
+    if ((flags & 8) && (flags & 2)) {
+      LARGE_INTEGER zero{};
+      ::SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN);
+      ::SetEndOfFile(handle);
+    } else if ((flags & 16) && (flags & 2)) {
+      LARGE_INTEGER zero{};
+      ::SetFilePointerEx(handle, zero, nullptr, FILE_END);
+    }
+    return reinterpret_cast<intptr_t>(handle);
+  } catch (winrt::hresult_error const& error) {
+    Log::Write(L"download: brokered open failed", std::wstring(error.message()));
+    return -1;
+  }
+}
+
+int32_t DownloadBroker::AuthorizedFileExists(const wchar_t* path) {
+  if (!IsCachedAuthorizedPath(path)) return -1;
+  try {
+    auto folder = GetDestination();
+    if (!folder || !path) return -1;
+    const std::wstring root(folder.Path());
+    if (_wcsicmp(root.c_str(), path) == 0) return 2;
+    std::wstring leaf;
+    if (!IsAuthorizedChild(folder, path, &leaf)) return -1;
+    auto item = folder.GetItemAsync(leaf).get();
+    return item.IsOfType(StorageItemTypes::Folder) ? 2 : 1;
+  } catch (winrt::hresult_error const& error) {
+    const auto code = error.code();
+    return code == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+                   code == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
+               ? 0
+               : -1;
+  }
+}
+
+int32_t DownloadBroker::StatAuthorizedFile(const wchar_t* path, int64_t* size) {
+  if (!size || !IsCachedAuthorizedPath(path)) return -1;
+  *size = 0;
+  try {
+    auto folder = GetDestination();
+    if (!folder || !path) return -1;
+    const std::wstring root(folder.Path());
+    if (_wcsicmp(root.c_str(), path) == 0) return 2;
+    std::wstring leaf;
+    if (!IsAuthorizedChild(folder, path, &leaf)) return -1;
+    auto item = folder.GetItemAsync(leaf).get();
+    if (item.IsOfType(StorageItemTypes::Folder)) return 2;
+    auto file = item.as<StorageFile>();
+    try {
+      *size = static_cast<int64_t>(file.GetBasicPropertiesAsync().get().Size());
+    } catch (winrt::hresult_error const&) {
+      // An actively written .part can temporarily deny the metadata query.
+      // It is still a valid file; report an unknown/zero size for this pass.
+      *size = 0;
+    }
+    return 1;
+  } catch (winrt::hresult_error const&) {
+    return -1;
+  }
+}
+
+int32_t DownloadBroker::MoveAuthorizedFile(const wchar_t* source,
+                                           const wchar_t* destination) {
+  if (!IsCachedAuthorizedPath(source) ||
+      !IsCachedAuthorizedPath(destination)) return -1;
+  try {
+    auto folder = GetDestination();
+    std::wstring sourceLeaf;
+    std::wstring destinationLeaf;
+    if (!folder || !IsAuthorizedChild(folder, source, &sourceLeaf) ||
+        !IsAuthorizedChild(folder, destination, &destinationLeaf)) return -1;
+    auto file = folder.GetFileAsync(sourceLeaf).get();
+    file.RenameAsync(destinationLeaf, NameCollisionOption::ReplaceExisting).get();
+    return 1;
+  } catch (winrt::hresult_error const& error) {
+    Log::Write(L"download: brokered rename failed", std::wstring(error.message()));
+    return -1;
+  }
+}
+
+int32_t DownloadBroker::RemoveAuthorizedFile(const wchar_t* path) {
+  if (!IsCachedAuthorizedPath(path)) return -1;
+  try {
+    auto folder = GetDestination();
+    std::wstring leaf;
+    if (!folder || !IsAuthorizedChild(folder, path, &leaf)) return -1;
+    folder.GetFileAsync(leaf).get().DeleteAsync(StorageDeleteOption::PermanentDelete)
+        .get();
+    return 1;
+  } catch (winrt::hresult_error const& error) {
+    return error.code() == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ? 1 : -1;
+  }
 }
 
 int32_t DownloadBroker::PickFile(int32_t mode, const char* title,
@@ -343,7 +558,31 @@ int32_t DownloadBroker::PickFile(int32_t mode, const char* title,
                         extensionsList = std::move(extensionsList), output,
                         completed]() mutable {
     try {
-      if (mode == 1) {
+      if (mode == 2) {
+        FolderPicker picker;
+        picker.ViewMode(PickerViewMode::List);
+        picker.SuggestedStartLocation(PickerLocationId::Downloads);
+        picker.SettingsIdentifier(L"GeckoDownloads");
+        picker.CommitButtonText(L"Use for downloads");
+        picker.FileTypeFilter().Append(L"*");
+        auto operation = picker.PickSingleFolderAsync();
+        operation.Completed([output, completed](auto const& async,
+                                                AsyncStatus status) {
+          try {
+            if (status == AsyncStatus::Completed) {
+              auto folder = async.GetResults();
+              if (folder) {
+                RememberDestination(folder);
+                *output = Narrow(std::wstring(folder.Path()));
+              }
+            }
+          } catch (winrt::hresult_error const& error) {
+            Log::Write(L"download: folder picker completion failed",
+                       std::wstring(error.message()));
+          }
+          ::SetEvent(completed);
+        });
+      } else if (mode == 1) {
         FileSavePicker picker;
         picker.SuggestedStartLocation(PickerLocationId::Downloads);
         picker.SettingsIdentifier(L"GeckoSaveAs");

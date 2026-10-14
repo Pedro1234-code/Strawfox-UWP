@@ -35,7 +35,7 @@
   <Identity
       Name="Microsoft.MicrosoftEdge.Gecko"
       Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-      Version="155.0.12.140"
+      Version="155.0.13.140"
       ProcessorArchitecture="x64" />
 
   <mp:PhoneIdentity
@@ -122,6 +122,15 @@
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="geckopdf">
+            <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
+            <uap:DisplayName>PDF document</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.pdf</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
       </Extensions>
     </Application>
   </Applications>
@@ -134,6 +143,10 @@
 
     <!-- JIT. The whole reason a real Gecko engine can run here. -->
     <rescap:Capability Name="codeGeneration" />
+    <!-- Ask Xbox for the foreground game resource partition. Large threaded
+         WebAssembly titles can require a contiguous 1.5 GiB heap in addition
+         to decoded graphics, audio and the browser itself. -->
+    <rescap:Capability Name="expandedResources" />
 
     <!-- Camera / mic / location are brokered through the shell for getUserMedia. -->
     <DeviceCapability Name="microphone" />

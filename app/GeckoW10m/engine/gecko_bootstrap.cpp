@@ -212,8 +212,9 @@ void SeedProfileCaches(const std::wstring& install,
       " cache files and a compatibility.ini for " + Narrow(install));
 }
 
-void PrepareProfile(const std::wstring& profile, int width, int height,
-                    double scale) {
+void PrepareProfile(const std::wstring& profile,
+                    const std::wstring& downloadDirectory, int width,
+                    int height, double scale) {
   if (width <= 0 || height <= 0) {
     return;
   }
@@ -229,8 +230,12 @@ void PrepareProfile(const std::wstring& profile, int width, int height,
   WriteProfileFile(profile + L"\\xulstore.json", store);
 
   std::string scaleText = std::to_string(scale);
-  std::wstring downloadPath = profile + L"\\download-staging";
-  ::CreateDirectoryW(downloadPath.c_str(), nullptr);
+  std::wstring downloadPath = downloadDirectory.empty()
+                                  ? profile + L"\\download-staging"
+                                  : downloadDirectory;
+  if (downloadDirectory.empty()) {
+    ::CreateDirectoryW(downloadPath.c_str(), nullptr);
+  }
   std::string downloadPathUtf8 = Narrow(downloadPath);
   std::string escapedDownloadPath;
   escapedDownloadPath.reserve(downloadPathUtf8.size() * 2);
@@ -241,8 +246,8 @@ void PrepareProfile(const std::wstring& profile, int width, int height,
   std::string prefs =
       "// Written by the shell every start; see gecko_bootstrap.cpp.\n"
       "user_pref(\"layout.css.devPixelsPerPx\", \"" + scaleText + "\");\n"
-      "// Downloads stay in the app container until DownloadBroker exports "
-      "them through the user's FolderPicker permission.\n"
+      "// Use the FolderPicker-authorized directory directly. The private "
+      "staging path is only a fallback before authorization.\n"
       "user_pref(\"browser.download.folderList\", 2);\n"
       "user_pref(\"browser.download.useDownloadDir\", true);\n"
       "user_pref(\"browser.download.dir\", \"" + escapedDownloadPath + "\");\n"
@@ -271,8 +276,9 @@ using GetBootstrapFn = void(NS_FROZENCALL*)(mozilla::Bootstrap::UniquePtr&);
 extern "C" void gecko_w10m_gecko_set_logger(gecko_w10m_gecko_log_fn fn) { gLog = fn; }
 
 extern "C" int gecko_w10m_gecko_run(const wchar_t* installDir,
-                                 const wchar_t* profileDir, int width,
-                                 int height, double scale) {
+                                    const wchar_t* profileDir,
+                                    const wchar_t* downloadDirectory, int width,
+                                    int height, double scale) {
   const std::wstring install(installDir ? installDir : L"");
   const std::wstring profile(profileDir ? profileDir : L"");
 
@@ -365,7 +371,9 @@ extern "C" int gecko_w10m_gecko_run(const wchar_t* installDir,
   // pinnedTabsContainer, no selectedTab, no tabs.
   const mozilla::TimeStamp startedAt = mozilla::TimeStamp::Now();
 
-  PrepareProfile(profile, width, height, scale);
+  PrepareProfile(profile,
+                 std::wstring(downloadDirectory ? downloadDirectory : L""),
+                 width, height, scale);
   SeedProfileCaches(install, profile);
 
   Log("bootstrap: loading xul.dll");

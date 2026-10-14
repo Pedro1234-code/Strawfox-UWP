@@ -19,6 +19,7 @@
 
 #include "winrt/Windows.UI.Xaml.Controls.h"
 #include "winrt/Windows.UI.Xaml.Media.Imaging.h"
+#include "winrt/Windows.Devices.Input.h"
 #include "winrt/Windows.UI.Core.h"
 #include "winrt/Windows.UI.ViewManagement.h"
 
@@ -77,6 +78,8 @@ class EngineView {
   // through the ordinary resize, so the window and the swap chain change
   // shape together.
   static void FullscreenChanged(int32_t on);
+  static void PointerLockChanged(int32_t on);
+  static void CursorChanged(int32_t cursor);
   static int32_t PickFile(int32_t mode, const char* title,
                           const char* defaultName, const char* extensions,
                           char* result, int32_t resultCapacity);
@@ -173,6 +176,7 @@ class EngineView {
   // button: 0 left, 1 middle, 2 right.
   using MouseButtonFn = void (*)(int32_t message, int32_t button, int32_t x,
                                  int32_t y);
+  using MouseDeltaFn = void (*)(int32_t dx, int32_t dy);
   using WheelFn = void (*)(int32_t x, int32_t y, double dx, double dy);
   using WantedFn = int32_t (*)();
   using TextStateFn = uint32_t (*)();
@@ -191,8 +195,20 @@ class EngineView {
   using OpenUrlFn = int32_t (*)(const char* url);
   using SetLauncherFn = void (*)(void (*)(const char*));
   using SetFullscreenSinkFn = void (*)(void (*)(int32_t));
+  using SetPointerLockSinkFn = void (*)(void (*)(int32_t));
+  using ExitPointerLockFn = void (*)();
+  using SetCursorSinkFn = void (*)(void (*)(int32_t));
   using SetFilePickerSinkFn = void (*)(int32_t (*)(
       int32_t, const char*, const char*, const char*, char*, int32_t));
+  using SetDownloadDirectoryFn = void (*)(const wchar_t* path);
+  struct FileBroker {
+    intptr_t (*open)(const wchar_t*, int32_t);
+    int32_t (*exists)(const wchar_t*);
+    int32_t (*stat)(const wchar_t*, int64_t*);
+    int32_t (*move)(const wchar_t*, const wchar_t*);
+    int32_t (*remove)(const wchar_t*);
+  };
+  using SetFileBrokerFn = void (*)(const FileBroker* broker);
   using SetBridgeSinkFn = int32_t (*)(void (*)(const char*));
   using BridgeReplyFn = void (*)(const char*);
   using PanelFn = void (*)(void* panel);
@@ -217,6 +233,7 @@ class EngineView {
   CopyFn copy_ = nullptr;
   MouseFn mouse_ = nullptr;
   MouseButtonFn mouseButton_ = nullptr;
+  MouseDeltaFn mouseDelta_ = nullptr;
   WheelFn wheel_ = nullptr;
   WantedFn wanted_ = nullptr;
   // The focused field's kind and the engine's focus serial (see
@@ -234,7 +251,12 @@ class EngineView {
   OpenUrlFn open_url_ = nullptr;
   SetLauncherFn set_launcher_ = nullptr;
   SetFullscreenSinkFn set_fullscreen_ = nullptr;
+  SetPointerLockSinkFn set_pointer_lock_ = nullptr;
+  ExitPointerLockFn exit_pointer_lock_ = nullptr;
+  SetCursorSinkFn set_cursor_ = nullptr;
   SetFilePickerSinkFn set_file_picker_ = nullptr;
+  SetDownloadDirectoryFn set_download_directory_ = nullptr;
+  SetFileBrokerFn set_file_broker_ = nullptr;
   SetVideoLayerSinkFn set_video_layer_ = nullptr;
   // The chrome-to-shell message bridge (client/DrmBridge). Armed once the
   // engine's main thread is up, which is later than the exports resolve.
@@ -277,6 +299,11 @@ class EngineView {
   uint64_t seen_ = 0;
   int32_t width_ = 0;
   int32_t height_ = 0;
+  // Chrome popups are software-composited over the GPU-backed browser. Track
+  // their transition so the final transparent frame is copied when one closes,
+  // and cap those large UI-thread copies while it remains open.
+  bool chromeOverlayVisible_ = false;
+  unsigned long long lastChromeOverlayCopy_ = 0;
   bool reported_ = false;
   bool panelGiven_ = false;
   bool sizeSent_ = false;
@@ -305,6 +332,9 @@ class EngineView {
   winrt::event_token coreMousePressed_{};
   winrt::event_token coreMouseReleased_{};
   winrt::event_token coreMouseWheel_{};
+  winrt::Windows::Devices::Input::MouseDevice mouseDevice_{nullptr};
+  winrt::event_token rawMouseMoved_{};
+  bool pointerLocked_ = false;
   bool coreLeftDown_ = false;
   bool coreMiddleDown_ = false;
   bool coreRightDown_ = false;

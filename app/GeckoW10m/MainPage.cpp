@@ -108,7 +108,8 @@ MainPage::MainPage() {
     Log::Write(line);
   }
   Log::Write(L"LocalState", std::wstring(localState));
-  client::DownloadBroker::Initialize(std::wstring(localState));
+  const std::wstring downloadDirectory =
+      client::DownloadBroker::Initialize(std::wstring(localState));
   Log::Write(Log::Verbose()
                  ? L"logs: verbose -- the engine's logging and the probes are on"
                  : L"logs: quiet (Settings > About > Verbose logs for debugging "
@@ -181,6 +182,7 @@ MainPage::MainPage() {
       const ULONGLONG started = ::GetTickCount64();
       long long lastBusy = 0, lastIdle = 0;
       unsigned samples = 0;
+      bool headroomPressure = false;
       while (true) {
         ::Sleep(::GetTickCount64() - started < 120000 ? 10000 : 30000);
         try {
@@ -210,6 +212,41 @@ MainPage::MainPage() {
             line += L"; phone stats unavailable";
           }
           Log::Write(line);
+          // MemoryManager can continue reporting Low on Xbox even when less
+          // than the 1.5 GiB contiguous heap required by large wasm games is
+          // left in the package budget. Purge Gecko's discardable caches and
+          // collect dead response/JS objects before the allocation is tried.
+          const uint64_t usage = MemoryManager::AppMemoryUsage();
+          const uint64_t limit = MemoryManager::AppMemoryUsageLimit();
+          static unsigned long long lastHeadroomPurge = 0;
+          const unsigned long long purgeNow = ::GetTickCount64();
+          constexpr uint64_t kRequiredHeadroom = 2ull * 1024 * 1024 * 1024;
+          if (limit > usage && limit - usage >= kRequiredHeadroom &&
+              static_cast<int>(MemoryManager::AppMemoryUsageLevel()) == 0 &&
+              headroomPressure) {
+            headroomPressure = false;
+            if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
+              using PressureFn = void(__cdecl*)(int32_t);
+              if (auto fn = reinterpret_cast<PressureFn>(
+                      ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
+                Log::Write(L"mem: large wasm heap headroom restored");
+                fn(0);
+              }
+            }
+          }
+          if (limit > usage && limit - usage < kRequiredHeadroom &&
+              (!lastHeadroomPurge || purgeNow - lastHeadroomPurge >= 30000)) {
+            lastHeadroomPurge = purgeNow;
+            headroomPressure = true;
+            if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
+              using PressureFn = void(__cdecl*)(int32_t);
+              if (auto fn = reinterpret_cast<PressureFn>(
+                      ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
+                Log::Write(L"mem: reserving headroom for a large wasm heap");
+                fn(2);
+              }
+            }
+          }
           // Every other sample -- every minute once past the first two --
           // what that memory is made of.
           if (++samples % 2 == 0 && Log::Verbose()) {
@@ -352,8 +389,8 @@ MainPage::MainPage() {
 
   // Last, so the window is up and the log is readable before Gecko gets its
   // chance to take the process down with it.
-  engine::StartGeckoRuntime(std::wstring(localState), pixelWidth, pixelHeight,
-                            cssScale);
+  engine::StartGeckoRuntime(std::wstring(localState), downloadDirectory,
+                            pixelWidth, pixelHeight, cssScale);
 }
 
 void MainPage::PushDpi() {
@@ -880,7 +917,16 @@ void MainPage::Navigate(std::wstring_view entry) {
   };
   obs.ProgressChanged = [this, dispatcher](float p) {
     dispatcher.RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::Normal,
-                        [this, p] { progress_.Value(p); });
+                        [this, p] {
+                          // Gecko progress is normally in [0, 1], but startup
+                          // can briefly report a sentinel/NaN. ProgressBar
+                          // rejects that with E_FAIL, which used to escape as
+                          // an unhandled XAML exception on every notification.
+                          double value = static_cast<double>(p);
+                          if (!(value >= 0.0)) value = 0.0;  // also catches NaN
+                          if (value > 1.0) value = 1.0;
+                          progress_.Value(value);
+                        });
   };
   obs.CanGoBackChanged = [](bool) {};
   obs.CanGoForwardChanged = [](bool) {};
