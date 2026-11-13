@@ -69,82 +69,109 @@ app/GeckoW10m/        C++/WinRT UWP shell (the browser UI)
   ├─ client/          core models (preferences, search, tabs)
   ├─ engine/          GeckoEngine wrapper + gecko_capi C ABI
   └─ Package.appxmanifest   declares codeGeneration + restricted capabilities
-mozconfig/            the engine's build configuration (arm-uwp, single-process, JIT)
-patches/w10m/         the engine port as git format-patch files over the release tag
-tools/                build scripts (build-all.sh runs the whole chain)
+mozconfig/            engine build configurations (x64 UWP, plus legacy ARM32)
+patches/w10m/         historical ARM32 port patches
+tools/                Gecko build tools and legacy packaging scripts
 vendor/               mobile-config-firefox: the phone UI theme and default prefs
-engine/firefox/       Gecko submodule: the port's branch w10m-port, on Firefox 155.0.1
+engine/firefox/       Gecko submodule pinned to the Strawfox fork
 ```
 
-## Build
+## Build for Xbox (x64)
 
-The build runs on x64 Windows. The tools below are the
-versions it is known to build with.
+Strawfox has two build steps: compile the Gecko engine, then build and package
+the standalone UWP host in Visual Studio. The ARM32/Windows Phone scripts and
+patches in this repository are historical references.
 
-### Requirements
+### Prerequisites
 
-| Tool | Version | Notes |
-|---|---|---|
-| Visual Studio 2026 | 17.14 (MSVC 14.44) | Workload "Desktop development with C++" plus the individual component **MSVC v143 ARM build tools**. 17.14 is the last release with ARM32 tools. |
-| Windows 10/11 SDK | 10.0.26100.0 | Headers, tools, cppwinrt. The newer 26100 dropped ARM32 libraries. |
-| VCLibs x64 | 14.00 | `Microsoft.VCLibs.arm.14.00.appx` under `C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs\14.0`, installed with the UWP workload of Visual Studio. The package carries its CRT from it. |
-| VCLibs Desktop x64 | 14.00 | `Microsoft.VCLibs.Desktop.arm.14.00.appx` under `C:\Program Files (x86)\Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs.Desktop\14.0`, installed with the UWP workload of Visual Studio. |
-| LLVM | 22.1 | clang-cl and lld-link, installed in `C:\Program Files\LLVM`. |
-| MozillaBuild | 4.2 | In `C:\mozilla-build`. Run the scripts from its `start-shell.bat` or any bash that has it on PATH. |
-| Rust | nightly (built with 1.96.0-nightly 2026-03-11) | The default toolchain, with the `rust-src` component: `rustup default nightly-2026-03-11`, `rustup component add rust-src`. The std for the ARM32 UWP target is compiled from source by `tools/uwp-install-std.sh`. |
-| cbindgen | 0.29 | `cargo install cbindgen` |
-| Node.js | 24 | On PATH. |
+- Windows x64, Git, and [MozillaBuild](https://firefox-source-docs.mozilla.org/setup/windows_build.html).
+- Visual Studio with C++ desktop and UWP tooling, Windows SDK `10.0.26100.0`,
+  and the x64 VCLibs Desktop 14.0 Extension SDK. The engine scripts look for an
+  installed x64 MSVC toolset (v145 in the current setup); the host project
+  targets v143, so install the v143 x64/x86 build tools and v143 UWP C++ tools
+  as well.
+- LLVM with `clang-cl.exe` and `lld-link.exe`, plus NASM, GNU Make, Node.js,
+  `sccache`, and `cbindgen` 0.29.4 or newer.
+- Rust through rustup, with a nightly toolchain and its `rust-src` component.
+  The engine uses the `x86_64-uwp-windows-msvc` target and builds its Rust
+  standard library from source.
+- The x64 Windows App SDK runtime DLLs. Use the redistributable pinned in
+  [Gecko's toolchain definitions](https://github.com/Pedro1234-code/firefox/blob/strawfox-uwp/taskcluster/kinds/fetch/toolchains.yml)
+  (search for `windowsappsdk-redist`). Extract the x64 runtime MSIX from it,
+  then copy the DLLs listed in
+  [Gecko's Windows App SDK extraction script](https://github.com/Pedro1234-code/firefox/blob/strawfox-uwp/taskcluster/scripts/misc/build-WindowsAppSDK.sh)
+  into the directory you set as `MOZ_WINDOWS_APP_SDK_DIR`.
 
-All locations can be changed with environment variables; see the top of
-[`tools/env.sh`](tools/env.sh). The engine's object directory is `C:\rw-obj` by default
-(`GECKO_W10M_OBJ`); keep its path short, or libwebrtc's deepest objects exceed MAX_PATH.
-About 25 GB of free space are needed for it.
+### 1. Clone the source and build Gecko
 
-### Get the engine
-
-Either way gives the same tree:
+Run these commands in the MozillaBuild shell (`C:\mozilla-build\start-shell.bat`).
+Use short paths for the checkout and object directory to avoid path length
+errors when compiling WebRTC.
 
 ```bash
-# a) the submodule, from the fork that carries the port's branch
+cd /c
+git clone https://github.com/Pedro1234-code/Strawfox-UWP.git strawfox
+cd strawfox
 git submodule update --init --depth 1 engine/firefox
-
-# b) or plain Firefox at the tag in engine/release.txt, plus patches/w10m
-git clone --depth 1 --branch FIREFOX_155_0_1_RELEASE https://github.com/mozilla-firefox/firefox engine/firefox
-bash tools/apply-patches-w10m.sh      # or: tools\apply-patches-w10m.ps1
 ```
 
-### Build the package
+The submodule pins the matching revision of the
+[Strawfox Gecko fork](https://github.com/Pedro1234-code/firefox/tree/strawfox-uwp).
+Use that revision rather than an upstream Firefox checkout.
 
 ```bash
-bash tools/build-all.sh
+rustup toolchain install nightly --component rust-src
+rustup override set nightly
+cargo install cbindgen --locked
+cargo install sccache --locked
+
+export GECKO_W10M_OBJ=C:/rw-obj
+export GECKO_W10M_SCCACHE="$(cygpath -m "$USERPROFILE")/.cargo/bin"
+export MOZ_WINDOWS_APP_SDK_DIR=C:/firefox-deps/windowsappsdk-x64
+
+bash tools/prepare-windows-rs.sh
+bash tools/uwp-install-std.sh
+bash tools/browser-build.sh
 ```
 
-That fetches and patches the `windows` crate (`tools/prepare-windows-rs.sh`), builds the
-Rust std for the target once (`tools/uwp-install-std.sh`), builds the engine
-(`tools/browser-build.sh`), packages it (`tools/package.sh`) and builds, packs and signs
-the appx (`tools/build-appx.sh`). The package lands in `app/GeckoW10m/AppPackages/`,
-together with the certificate to trust on the phone and `INSTALL.txt`. A full engine build
-takes about half an hour on 16 cores; after that the steps can be run one by one.
+Adjust the paths for your machine before running the scripts. See
+[`tools/env.sh`](tools/env.sh) for defaults and overrides, including
+`GECKO_W10M_VC` (the toolset directory containing `bin/Hostx64/x64/cl.exe`),
+`GECKO_W10M_LLVM`, `GECKO_W10M_NASM`, `GECKO_W10M_GMAKE`, and
+`GECKO_W10M_JOBS`. If the configured GNU Make binary has a different name or
+location, set `GMAKE` to its full path. If the SDK's `dxcompiler.dll` is in a
+different location, set `MOZ_DXCOMPILER_PATH` to the x64 DLL.
 
-### Signing
+The build uses [the x64 UWP mozconfig](mozconfig/mozconfig.x64-uwp-browser)
+and should finish with `=== build exit=0`. Check for `xul.dll` and
+`omni.ja` under `C:\rw-obj\dist\bin`. Reuse the object directory for
+incremental builds. Rebuild the Rust standard library after changing the
+nightly toolchain.
 
-I suggest you to create your own certificate on Visual Studio. In order for native USB mouse to work on Xbox, you must use a certificate with Microsoft's CN and Microsoft Edge package identity name (Microsoft.MicrosoftEdge.Name for example).
+### 2. Build and package the standalone app
 
+1. Open [`app/GeckoW10m.sln`](app/GeckoW10m.sln) and select **Release | x64**
+   (or **Debug | x64** when debugging the host).
+2. Build the solution. The project consumes Gecko's `dist\bin`,
+   `dist\include`, and `dist\lib` directly; you do not need to run
+   `mach package`. If you used a different object directory or LLVM location,
+   set the MSBuild properties `GeckoW10mObj` and `GeckoW10mClangCl`, or set
+   those environment variables before opening Visual Studio.
+3. Use **Publish > Create App Packages** and choose sideloading. Configure your
+   own test signing certificate whose subject matches the package manifest's
+   `Publisher`. The certificate thumbprint in the project is specific to the
+   original build machine. Use the generated x64 package and its dependencies
+   to deploy to your Xbox in Developer Mode.
 
-### Changing the engine
+If you change only the standalone host, rebuild the Visual Studio project
+against the existing Gecko output. If you change Gecko, rebuild the engine
+and regenerate the UWP package so it includes the updated runtime.
 
-Commit to the `w10m-port` branch in `engine/firefox`, then refresh the patches, which also
-checks that they rebuild the branch exactly, and commit them with the submodule:
+### Contributing engine changes
 
-```bash
-bash tools/export-patches-w10m.sh
-```
-
-### Older scripts
-
-`tools/build-gecko-uwp.ps1`, `uwp-configure.sh`, `uwp-build.sh`, `uwp-build-std.sh` and
-`mozconfig/mozconfig.arm-uwp` are the SpiderMonkey-only bring-up from before the whole
-browser built; they are kept for reference and are not part of the build above.
+Push engine changes to the Strawfox Gecko fork first. Then commit the updated
+`engine/firefox` submodule pointer in this repository so other checkouts can
+fetch the same engine revision.
 
 ## Credits
 
