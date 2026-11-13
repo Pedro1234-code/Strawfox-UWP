@@ -281,6 +281,11 @@ void PrepareProfile(const std::wstring& profile,
   prefs +=
       "user_pref(\"dom.webgpu.allow-in-parent\", true);\n"
       "user_pref(\"dom.webgpu.allow-present-without-readback\", true);\n";
+  // Avoid Glean metric writes in the UWP browser profile.
+  prefs +=
+      "user_pref(\"datareporting.healthreport.uploadEnabled\", false);\n"
+      "user_pref(\"telemetry.fog.test.localhost_port\", 0);\n"
+      "user_pref(\"telemetry.fog.init_on_shutdown\", false);\n";
   WriteProfileFile(profile + L"\\user.js", prefs);
   Log("bootstrap: profile window " + std::to_string(cssWidth) + "x" +
       std::to_string(cssHeight) + " at " + scaleText + " device pixels per CSS pixel");
