@@ -4,6 +4,7 @@
 #include <winrt/Windows.Storage.AccessCache.h>
 #include <winrt/Windows.Storage.FileProperties.h>
 #include <winrt/Windows.Storage.Pickers.h>
+#include <winrt/Windows.System.h>
 
 #include <algorithm>
 #include <atomic>
@@ -29,16 +30,19 @@ using namespace winrt::Windows::UI::Core;
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Xaml::Controls;
 
+namespace gecko_w10m::client {
+namespace {
+
+// ABI of IStorageItemHandleAccess without the desktop Shell headers.
 MIDL_INTERFACE("5CA296B2-2C25-4D22-B785-B885C8201E6A")
-IStorageItemHandleAccess : public ::IUnknown {
- public:
+StorageItemHandleAccess : public ::IUnknown {
   virtual HRESULT STDMETHODCALLTYPE Create(DWORD access, DWORD sharing,
                                            DWORD options, ::IUnknown* oplock,
                                            HANDLE* handle) = 0;
 };
 
-namespace gecko_w10m::client {
-namespace {
+constexpr DWORD kHandleRead = 0x120089;
+constexpr DWORD kHandleWrite = 0x120116;
 
 constexpr wchar_t kDestinationToken[] = L"Gecko.Downloads.v1";
 
@@ -89,24 +93,27 @@ bool HasDestination() {
 }
 
 StorageFolder GetDestination() {
+  StorageFolder folder{nullptr};
   try {
-    auto folder = StorageApplicationPermissions::FutureAccessList()
-                      .GetFolderAsync(kDestinationToken)
-                      .get();
-    ApplicationData::Current().LocalSettings().Values().Insert(
-        L"DownloadFolderPath", box_value(folder.Path()));
-    return folder;
+    auto accessList = StorageApplicationPermissions::FutureAccessList();
+    if (!accessList.ContainsItem(kDestinationToken)) return nullptr;
+    folder = accessList.GetFolderAsync(kDestinationToken).get();
   } catch (winrt::hresult_error const& error) {
-    Log::Write(L"download: saved folder permission is no longer valid",
-               std::wstring(error.message()));
-    try {
-      StorageApplicationPermissions::FutureAccessList().Remove(
-          kDestinationToken);
-    } catch (...) {
-    }
-    CacheDestinationPath({});
+    Log::WriteNum(L"download: restoring authorized folder failed (HRESULT)",
+                  static_cast<int32_t>(error.code()));
     return nullptr;
   }
+
+  if (folder) {
+    try {
+      ApplicationData::Current().LocalSettings().Values().Insert(
+          L"DownloadFolderPath", box_value(folder.Path()));
+    } catch (winrt::hresult_error const& error) {
+      Log::WriteNum(L"download: caching folder path failed (HRESULT)",
+                    static_cast<int32_t>(error.code()));
+    }
+  }
+  return folder;
 }
 
 std::wstring SavedDestinationPath() {
@@ -415,13 +422,49 @@ void DownloadBroker::SetDirectoryChangedSink(DirectoryChangedFn sink) {
   }).detach();
 }
 
+void DownloadBroker::LaunchDownloadedFile(std::wstring path) {
+  if (path.empty() || !gDispatcher) return;
+  gDispatcher.RunAsync(CoreDispatcherPriority::Normal, [path = std::move(path)] {
+    [](std::wstring filePath) -> winrt::fire_and_forget {
+      try {
+        StorageFile file{nullptr};
+        try {
+          file = co_await StorageFile::GetFileFromPathAsync(filePath);
+        } catch (winrt::hresult_error const&) {
+        }
+        if (!file) {
+          auto access = StorageApplicationPermissions::FutureAccessList();
+          if (!access.ContainsItem(kDestinationToken)) co_return;
+          auto folder = co_await access.GetFolderAsync(kDestinationToken);
+          std::wstring leaf;
+          if (!folder || !IsAuthorizedChild(folder, filePath.c_str(), &leaf))
+            co_return;
+          file = co_await folder.GetFileAsync(leaf);
+        }
+        if (file && !(co_await winrt::Windows::System::Launcher::LaunchFileAsync(file))) {
+          Log::Write(L"download: no system handler opened the file");
+        }
+      } catch (winrt::hresult_error const& error) {
+        Log::WriteNum(L"download: system launch failed (HRESULT)",
+                      static_cast<int32_t>(error.code()));
+      } catch (...) {
+        Log::Write(L"download: system launch failed");
+      }
+    }(path);
+  });
+}
+
 intptr_t DownloadBroker::OpenAuthorizedFile(const wchar_t* path,
                                             int32_t flags) {
   if (!IsCachedAuthorizedPath(path)) return -1;
+  Log::WriteNum(L"download: broker open begin (flags)", flags);
   try {
     auto folder = GetDestination();
     std::wstring leaf;
-    if (!folder || !IsAuthorizedChild(folder, path, &leaf)) return -1;
+    if (!folder || !IsAuthorizedChild(folder, path, &leaf)) {
+      Log::Write(L"download: broker open could not resolve authorized destination");
+      return -1;
+    }
     StorageFile file{nullptr};
     if (flags & 4) {
       const auto collision = (flags & 32)
@@ -431,19 +474,16 @@ intptr_t DownloadBroker::OpenAuthorizedFile(const wchar_t* path,
     } else {
       file = folder.GetFileAsync(leaf).get();
     }
-    winrt::com_ptr<IStorageItemHandleAccess> access;
+    winrt::com_ptr<StorageItemHandleAccess> access;
     winrt::check_hresult(reinterpret_cast<::IUnknown*>(winrt::get_abi(file))
-                             ->QueryInterface(__uuidof(IStorageItemHandleAccess),
+                             ->QueryInterface(__uuidof(StorageItemHandleAccess),
                                               access.put_void()));
-    // IStorageItemHandleAccess::Create takes HANDLE_ACCESS_OPTIONS, not a
-    // native ACCESS_MASK. Passing FILE_GENERIC_READ/WRITE-style masks makes
-    // the WinRT implementation reject the call with E_INVALIDARG.
-    DWORD desired = 0;
-    if (flags & 1) desired |= 1;  // HAO_READ
-    if (flags & 2) desired |= 2;  // HAO_WRITE
-    if (!desired) desired = 1;
+    const DWORD desired = ((flags & 2) ? kHandleWrite : 0) |
+                          (((flags & 1) || !(flags & 2)) ? kHandleRead : 0);
+    constexpr DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     HANDLE handle = INVALID_HANDLE_VALUE;
-    winrt::check_hresult(access->Create(desired, 1 | 2 | 4, 0, nullptr, &handle));
+    winrt::check_hresult(
+        access->Create(desired, sharing, 0, nullptr, &handle));
     if ((flags & 8) && (flags & 2)) {
       LARGE_INTEGER zero{};
       ::SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN);
@@ -452,9 +492,11 @@ intptr_t DownloadBroker::OpenAuthorizedFile(const wchar_t* path,
       LARGE_INTEGER zero{};
       ::SetFilePointerEx(handle, zero, nullptr, FILE_END);
     }
+    Log::Write(L"download: broker open succeeded");
     return reinterpret_cast<intptr_t>(handle);
   } catch (winrt::hresult_error const& error) {
-    Log::Write(L"download: brokered open failed", std::wstring(error.message()));
+    Log::WriteNum(L"download: broker open failed (HRESULT)",
+                  static_cast<int32_t>(error.code()));
     return -1;
   }
 }

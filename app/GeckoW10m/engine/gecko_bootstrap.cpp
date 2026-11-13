@@ -246,6 +246,19 @@ void PrepareProfile(const std::wstring& profile,
   std::string prefs =
       "// Written by the shell every start; see gecko_bootstrap.cpp.\n"
       "user_pref(\"layout.css.devPixelsPerPx\", \"" + scaleText + "\");\n"
+      "// The standalone UWP host owns the application lifetime; its Firefox "
+      "chrome must not expose minimize or close caption buttons.\n"
+      "user_pref(\"widget.gecko-w10m.standalone-mode\", true);\n"
+      "user_pref(\"ui.useOverlayScrollbars\", 0);\n"
+      "user_pref(\"widget.non-native-theme.scrollbar.style\", 4);\n"
+      "// Enable real WebRTC capture. Package capabilities still gate OS "
+      "access and Firefox still asks each site for permission.\n"
+      "user_pref(\"media.peerconnection.enabled\", true);\n"
+      "user_pref(\"media.navigator.video.enabled\", true);\n"
+      "user_pref(\"media.navigator.streams.fake\", false);\n"
+      "user_pref(\"media.navigator.permission.disabled\", false);\n"
+      "user_pref(\"permissions.default.camera\", 0);\n"
+      "user_pref(\"permissions.default.microphone\", 0);\n"
       "// Use the FolderPicker-authorized directory directly. The private "
       "staging path is only a fallback before authorization.\n"
       "user_pref(\"browser.download.folderList\", 2);\n"
@@ -264,6 +277,10 @@ void PrepareProfile(const std::wstring& profile,
       "user_pref(\"media.sanity-test.disabled\", true);\n"
       "user_pref(\"sanity-test.running\", false);\n"
       "user_pref(\"media.hardware-video-decoding.failed\", false);\n";
+  // Allow shared WebGPU textures when the adapter and compositor support them.
+  prefs +=
+      "user_pref(\"dom.webgpu.allow-in-parent\", true);\n"
+      "user_pref(\"dom.webgpu.allow-present-without-readback\", true);\n";
   WriteProfileFile(profile + L"\\user.js", prefs);
   Log("bootstrap: profile window " + std::to_string(cssWidth) + "x" +
       std::to_string(cssHeight) + " at " + scaleText + " device pixels per CSS pixel");

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "client/Log.h"
+#include "client/DownloadBroker.h"
 
 namespace gecko_w10m::client {
 
@@ -248,7 +249,9 @@ void Handle(std::string json) {
     JsonObject msg = JsonObject::Parse(Widen(json.c_str()));
     id = msg.GetNamedNumber(L"id", 0);
     std::wstring op(msg.GetNamedString(L"op", L""));
-    if (op == L"drm.info") {
+    if (op == L"file.open-download") {
+      DownloadBroker::LaunchDownloadedFile(std::wstring(msg.GetNamedString(L"path", L"")));
+    } else if (op == L"drm.info") {
       HandleInfo(id);
     } else if (op == L"drm.challenge") {
       HandleChallenge(id, msg);

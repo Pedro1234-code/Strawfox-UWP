@@ -140,36 +140,26 @@ MainPage::MainPage() {
                  std::to_wstring(static_cast<int>(level)) +
                  L" at " + mb(MemoryManager::AppMemoryUsage()) + L" of " +
                  mb(MemoryManager::AppMemoryUsageLimit()));
-      // Low is 0, Medium 1, High 2, OverLimit 3. From Medium on, the engine
-      // is told to let go of what it can -- but not every time. On a 1 GB
-      // phone Medium is half the limit, the system repeats it several times a
-      // second, and each one is a full GC, a cycle collection and a cache
-      // purge on a CPU that is already 90% busy: the cure was the illness.
-      // Medium goes through once in thirty seconds, High and over once in
-      // five.
-      static std::atomic<unsigned long long> lastSent{0};
-      const unsigned long long now = ::GetTickCount64();
-      // Past the limit (OverLimit, 3) the app is about to be ended, so that
-      // one always goes through.
-      const unsigned long long gap = static_cast<int>(level) >= 3   ? 0ull
-                                     : static_cast<int>(level) >= 2 ? 5000ull
-                                                                    : 30000ull;
-      const unsigned long long last = lastSent.load();
-      if (static_cast<int>(level) >= 1 && (!last || now - last >= gap)) {
-        lastSent.store(now);
-        if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
-          using PressureFn = void(__cdecl*)(int32_t);
-          if (auto fn = reinterpret_cast<PressureFn>(
-                  ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
-            fn(static_cast<int32_t>(level));
-          }
+      if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
+        using PressureFn = void(__cdecl*)(int32_t);
+        if (auto fn = reinterpret_cast<PressureFn>(
+                ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
+          fn(static_cast<int32_t>(level));
         }
       }
     });
     MemoryManager::AppMemoryUsageDecreased([mb](auto&&, auto&&) {
+      const auto level = MemoryManager::AppMemoryUsageLevel();
       Log::Write(L"mem: usage went down a level -- now " +
-                 std::to_wstring(static_cast<int>(MemoryManager::AppMemoryUsageLevel())) +
+                 std::to_wstring(static_cast<int>(level)) +
                  L" at " + mb(MemoryManager::AppMemoryUsage()));
+      if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
+        using PressureFn = void(__cdecl*)(int32_t);
+        if (auto fn = reinterpret_cast<PressureFn>(
+                ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
+          fn(static_cast<int32_t>(level));
+        }
+      }
     });
     // Every ten seconds for the first two minutes, then every thirty: the
     // app's own usage, and beside it what the whole phone is doing -- CPU
@@ -182,7 +172,6 @@ MainPage::MainPage() {
       const ULONGLONG started = ::GetTickCount64();
       long long lastBusy = 0, lastIdle = 0;
       unsigned samples = 0;
-      bool headroomPressure = false;
       while (true) {
         ::Sleep(::GetTickCount64() - started < 120000 ? 10000 : 30000);
         try {
@@ -212,41 +201,6 @@ MainPage::MainPage() {
             line += L"; phone stats unavailable";
           }
           Log::Write(line);
-          // MemoryManager can continue reporting Low on Xbox even when less
-          // than the 1.5 GiB contiguous heap required by large wasm games is
-          // left in the package budget. Purge Gecko's discardable caches and
-          // collect dead response/JS objects before the allocation is tried.
-          const uint64_t usage = MemoryManager::AppMemoryUsage();
-          const uint64_t limit = MemoryManager::AppMemoryUsageLimit();
-          static unsigned long long lastHeadroomPurge = 0;
-          const unsigned long long purgeNow = ::GetTickCount64();
-          constexpr uint64_t kRequiredHeadroom = 2ull * 1024 * 1024 * 1024;
-          if (limit > usage && limit - usage >= kRequiredHeadroom &&
-              static_cast<int>(MemoryManager::AppMemoryUsageLevel()) == 0 &&
-              headroomPressure) {
-            headroomPressure = false;
-            if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
-              using PressureFn = void(__cdecl*)(int32_t);
-              if (auto fn = reinterpret_cast<PressureFn>(
-                      ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
-                Log::Write(L"mem: large wasm heap headroom restored");
-                fn(0);
-              }
-            }
-          }
-          if (limit > usage && limit - usage < kRequiredHeadroom &&
-              (!lastHeadroomPurge || purgeNow - lastHeadroomPurge >= 30000)) {
-            lastHeadroomPurge = purgeNow;
-            headroomPressure = true;
-            if (HMODULE xul = ::GetModuleHandleW(L"xul.dll")) {
-              using PressureFn = void(__cdecl*)(int32_t);
-              if (auto fn = reinterpret_cast<PressureFn>(
-                      ::GetProcAddress(xul, "gecko_w10m_memory_pressure"))) {
-                Log::Write(L"mem: reserving headroom for a large wasm heap");
-                fn(2);
-              }
-            }
-          }
           // Every other sample -- every minute once past the first two --
           // what that memory is made of.
           if (++samples % 2 == 0 && Log::Verbose()) {

@@ -11,6 +11,8 @@
 // the engine is not there at all.
 #pragma once
 
+#include <winrt/Windows.Gaming.Input.h>
+
 #include <cstdint>
 #include <array>
 #include <functional>
@@ -154,7 +156,13 @@ class EngineView {
   // UWP exposes Xbox controllers through Windows.Gaming.Input rather than the
   // CoreWindow pointer stream. Polling here keeps the stick continuous and
   // converts it to the same wheel input used by a desktop mouse.
-  void PollGamepadScroll();
+  void PollGamepad();
+  bool HandleGamepadKey(winrt::Windows::System::VirtualKey key) const;
+  void SetGamepadMode(bool enabled, bool showStatus = true);
+  void ResetGamepadMode();
+  bool RouteGamepadReading(
+      winrt::Windows::Gaming::Input::GamepadReading const& reading,
+      unsigned long long now);
   winrt::Windows::Foundation::Point CoreMousePoint(
       winrt::Windows::Foundation::Point const& point) const;
   bool ToFrame(winrt::Windows::Foundation::Point const& point, int32_t* x,
@@ -344,7 +352,27 @@ class EngineView {
   int32_t lastInputY_ = 0;
   bool haveInputPoint_ = false;
   unsigned long long lastGamepadPoll_ = 0;
+  unsigned long long lastGamepadDiscovery_ = 0;
   bool gamepadApiUnavailable_ = false;
+  winrt::Windows::Gaming::Input::Gamepad gamepad_{nullptr};
+  using GamepadStateFn = void (*)(int32_t, uint32_t, double, double, double,
+                                 double, double, double);
+  GamepadStateFn gamepadState_ = nullptr;
+  uint32_t (*gamepadHelpRequests_)() = nullptr;
+  uint32_t (*gamepadPromptRequests_)() = nullptr;
+  bool xboxGamepad_ = false;
+  bool gamepadWindowActive_ = true;
+  bool gamepadMode_ = false;
+  bool gamepadMenuReady_ = false;
+  unsigned long long gamepadMenuDownAt_ = 0;
+  unsigned long long gamepadMenuPulseUntil_ = 0;
+  unsigned long long gamepadStatusUntil_ = 0;
+  winrt::event_token gamepadActivated_{};
+  winrt::Windows::UI::Core::CoreDispatcher::AcceleratorKeyActivated_revoker
+      gamepadAccelerator_;
+  winrt::Windows::UI::Xaml::ApplicationRequiresPointerMode previousPointerMode_{};
+  winrt::Windows::UI::Xaml::Controls::Border gamepadStatus_{nullptr};
+  winrt::Windows::UI::Xaml::Controls::TextBlock gamepadStatusText_{nullptr};
 
   bool typing_ = false;    // text input is wanted right now
   // The engine's focus serial at the last raise, the keyboard the sink was

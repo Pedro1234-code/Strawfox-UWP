@@ -16,6 +16,7 @@ class DownloadBroker {
   static std::wstring Initialize(std::wstring_view localStatePath);
   static void SetDirectoryChangedSink(DirectoryChangedFn sink);
   static intptr_t OpenAuthorizedFile(const wchar_t* path, int32_t flags);
+  static void LaunchDownloadedFile(std::wstring path);
   static int32_t AuthorizedFileExists(const wchar_t* path);
   static int32_t StatAuthorizedFile(const wchar_t* path, int64_t* size);
   static int32_t MoveAuthorizedFile(const wchar_t* source,

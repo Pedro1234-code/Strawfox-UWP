@@ -40,7 +40,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CppWinRTProjectLanguage>C++/WinRT</CppWinRTProjectLanguage>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
@@ -240,24 +240,17 @@
       <!-- Collect through private item types first. Qualifying every metadata
            reference is important here: this target runs while the C++ output
            groups already contain items with their own TargetPath metadata. -->
-      <_GeckoW10mRuntimeFile
-          Include="$(GeckoW10mObj)\dist\bin\**\*"
-          Exclude="$(GeckoW10mObj)\dist\bin\application.ini" />
-      <_GeckoW10mApplicationIni
-          Include="$(GeckoW10mObj)\dist\bin\application.ini" />
-      <_BuiltProjectOutputGroupOutputIntermediate
-          Include="@(_GeckoW10mRuntimeFile->'%(FullPath)')">
+      <_GeckoW10mRuntimeFile Include="$(GeckoW10mObj)\dist\bin\**\*" Exclude="$(GeckoW10mObj)\dist\bin\application.ini" />
+      <_GeckoW10mApplicationIni Include="$(GeckoW10mObj)\dist\bin\application.ini" />
+      <_BuiltProjectOutputGroupOutputIntermediate Include="@(_GeckoW10mRuntimeFile->'%(FullPath)')">
         <FinalOutputPath>%(_GeckoW10mRuntimeFile.FullPath)</FinalOutputPath>
         <TargetPath>%(_GeckoW10mRuntimeFile.RecursiveDir)%(_GeckoW10mRuntimeFile.Filename)%(_GeckoW10mRuntimeFile.Extension)</TargetPath>
       </_BuiltProjectOutputGroupOutputIntermediate>
-      <_BuiltProjectOutputGroupOutputIntermediate
-          Include="@(_GeckoW10mApplicationIni->'%(FullPath)')">
+      <_BuiltProjectOutputGroupOutputIntermediate Include="@(_GeckoW10mApplicationIni->'%(FullPath)')">
         <FinalOutputPath>%(_GeckoW10mApplicationIni.FullPath)</FinalOutputPath>
         <TargetPath>application.ini</TargetPath>
       </_BuiltProjectOutputGroupOutputIntermediate>
-      <_BuiltProjectOutputGroupOutputIntermediate
-          Include="@(_GeckoW10mApplicationIni->'%(FullPath)')"
-          KeepDuplicates="true">
+      <_BuiltProjectOutputGroupOutputIntermediate Include="@(_GeckoW10mApplicationIni->'%(FullPath)')" KeepDuplicates="true">
         <FinalOutputPath>%(_GeckoW10mApplicationIni.FullPath)</FinalOutputPath>
         <TargetPath>browser\application.ini</TargetPath>
       </_BuiltProjectOutputGroupOutputIntermediate>
